@@ -1,0 +1,313 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Public profile information for a young service provider or client.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "User's full name" },
+        "handle": { "type": "string", "description": "Unique username starting with @" },
+        "photoURL": { "type": "string", "format": "uri", "description": "Profile picture URL" },
+        "bio": { "type": "string", "description": "Short bio or description" },
+        "age": { "type": "number", "description": "User's age" },
+        "skills": { "type": "array", "items": { "type": "string" }, "description": "List of skills" },
+        "location": {
+          "type": "object",
+          "properties": {
+            "province": { "type": "string" },
+            "district": { "type": "string" },
+            "city": { "type": "string" },
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          },
+          "description": "Location details"
+        },
+        "role": { "type": "string", "enum": ["provider", "client", "admin"], "description": "User role" },
+        "lookingFor": { "type": "string", "description": "What the user is looking for" },
+        "followerCount": { "type": "number", "description": "Number of followers" },
+        "followingCount": { "type": "number", "description": "Number of following" },
+        "rating": { "type": "number", "description": "Average rating" },
+        "reviewCount": { "type": "number", "description": "Total number of reviews" },
+        "online": { "type": "boolean", "description": "Whether the user is online" },
+        "lastSeen": { "type": "string", "format": "date-time", "description": "Last seen timestamp" },
+        "unreadCount": { "type": "object", "description": "Unread message counts per chat" },
+        "blockedUsers": { "type": "array", "items": { "type": "string" }, "description": "List of blocked user UIDs" },
+        "lastCheckedNotifications": { "type": "string", "format": "date-time" },
+        "isComplete": { "type": "boolean", "description": "Whether the profile is complete" },
+        "acceptedTerms": { "type": "boolean", "description": "Whether the user accepted terms" },
+        "acceptedTermsAt": { "type": "string", "format": "date-time" },
+        "workExamples": { "type": "array", "items": { "type": "string" }, "description": "List of work example images" },
+        "bannerURL": { "type": "string", "format": "uri", "description": "Profile banner URL" },
+        "socialLinks": {
+          "type": "object",
+          "properties": {
+            "instagram": { "type": "string" },
+            "facebook": { "type": "string" },
+            "whatsapp": { "type": "string" },
+            "twitter": { "type": "string" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "role"]
+    },
+    "UserPrivate": {
+      "title": "Private User Data",
+      "description": "Sensitive PII data accessible only by the owner.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "description": "User's email" },
+        "phoneNumber": { "type": "string", "description": "User's phone number" }
+      },
+      "required": ["email"]
+    },
+    "Announcement": {
+      "title": "Announcement",
+      "description": "User announcement post",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorPhoto": { "type": "string" },
+        "content": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["authorId", "content"]
+    },
+    "Service": {
+      "title": "Service Listing",
+      "description": "A service offered by a young person.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "category": { "type": "string", "enum": ["domestico", "design", "aulas", "vendas", "transporte", "reparos", "outros"] },
+        "price": { "type": "number" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorPhoto": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "location": {
+          "type": "object",
+          "properties": {
+            "province": { "type": "string" },
+            "district": { "type": "string" },
+            "city": { "type": "string" },
+            "lat": { "type": "number" },
+            "lng": { "type": "number" }
+          }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "rating": { "type": "number" },
+        "reviewCount": { "type": "number" }
+      },
+      "required": ["title", "category", "authorId"]
+    },
+    "Order": {
+      "title": "Service Order",
+      "description": "A request for a service.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "serviceId": { "type": "string" },
+        "serviceTitle": { "type": "string" },
+        "clientId": { "type": "string" },
+        "clientName": { "type": "string" },
+        "providerId": { "type": "string" },
+        "providerName": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "completed_by_provider", "completed", "cancelled"] },
+        "message": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "isReviewed": { "type": "boolean" }
+      },
+      "required": ["serviceId", "clientId", "providerId", "status"]
+    },
+    "Review": {
+      "title": "Service Review",
+      "description": "Feedback after a service is completed.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "orderId": { "type": "string" },
+        "serviceId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "targetId": { "type": "string", "description": "The provider being reviewed" },
+        "rating": { "type": "number" },
+        "comment": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["orderId", "authorId", "targetId", "rating"]
+    },
+    "Chat": {
+      "title": "Chat Session",
+      "description": "A private conversation between two users.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "participants": { "type": "array", "items": { "type": "string" } },
+        "status": { "type": "string", "enum": ["pending", "active", "rejected"] },
+        "initiatorId": { "type": "string" },
+        "lastMessage": { "type": "string" },
+        "lastMessageAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["participants", "status", "initiatorId", "lastMessageAt"]
+    },
+    "Message": {
+      "title": "Chat Message",
+      "description": "A single message within a chat.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "chatId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "content": { "type": "string" },
+        "type": { "type": "string", "enum": ["text", "audio", "image", "file"] },
+        "audioURL": { "type": "string" },
+        "imageURL": { "type": "string" },
+        "fileURL": { "type": "string" },
+        "fileName": { "type": "string" },
+        "read": { "type": "boolean" },
+        "deletedFor": { "type": "array", "items": { "type": "string" } },
+        "deletedForAll": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["chatId", "senderId", "content", "type"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "A report about a user, service, or content.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "reportedId": { "type": "string", "description": "ID of the item being reported (user, service, message)" },
+        "reportedType": { "type": "string", "enum": ["user", "service", "message", "announcement"] },
+        "reporterId": { "type": "string", "description": "ID of the user who is reporting" },
+        "type": { "type": "string", "enum": ["spam", "inappropriate", "harassment", "fraud", "fake_review", "technical", "other"] },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "in_review", "resolved", "rejected"] },
+        "priority": { "type": "string", "enum": ["low", "medium", "high"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reportedId", "reportedType", "reporterId", "type", "status"]
+    },
+    "Education": {
+      "title": "Educational Resource",
+      "description": "Tips and mini-courses for young professionals.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "category": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "content"]
+    },
+    "Follow": {
+      "title": "Follow Relationship",
+      "description": "A follow relationship between two users.",
+      "type": "object",
+      "properties": {
+        "followerId": { "type": "string" },
+        "followingId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["followerId", "followingId"]
+    },
+    "Community": {
+      "title": "Community",
+      "description": "A group chat or community.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "memberCount": { "type": "number" },
+        "requiresApproval": { "type": "boolean" },
+        "category": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "description", "creatorId"]
+    },
+    "CommunityMessage": {
+      "title": "Community Message",
+      "description": "A message within a community.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderPhoto": { "type": "string" },
+        "content": { "type": "string" },
+        "imageURL": { "type": "string" },
+        "audioURL": { "type": "string" },
+        "type": { "type": "string", "enum": ["text", "audio", "image"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["senderId", "content"]
+    },
+    "CommunityMember": {
+      "title": "Community Member",
+      "description": "A member of a community.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "member"] },
+        "status": { "type": "string", "enum": ["pending", "approved"] },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "role", "status"]
+    },
+    "Job": {
+      "title": "Job Opportunity",
+      "description": "A job opening for young people.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "company": { "type": "string" },
+        "location": {
+          "type": "object",
+          "properties": {
+            "province": { "type": "string" },
+            "district": { "type": "string" },
+            "city": { "type": "string" }
+          }
+        },
+        "salary": { "type": "string" },
+        "type": { "type": "string", "enum": ["full-time", "part-time", "internship", "freelance"] },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorPhoto": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["open", "closed"] }
+      },
+      "required": ["title", "description", "company", "authorId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": { "schema": "User", "description": "Public user profiles" },
+    "/users_private/{userId}": { "schema": "UserPrivate", "description": "Private user data (PII)" },
+    "/follows/{followId}": { "schema": "Follow", "description": "User follow relationships" },
+    "/services/{serviceId}": { "schema": "Service", "description": "Service listings" },
+    "/jobs/{jobId}": { "schema": "Job", "description": "Job opportunities" },
+    "/orders/{orderId}": { "schema": "Order", "description": "Service orders" },
+    "/reviews/{reviewId}": { "schema": "Review", "description": "Service reviews" },
+    "/chats/{chatId}": { "schema": "Chat", "description": "Private chat sessions" },
+    "/chats/{chatId}/messages/{messageId}": { "schema": "Message", "description": "Messages within a chat" },
+    "/announcements/{announcementId}": { "schema": "Announcement", "description": "User announcements" },
+    "/communities/{communityId}": { "schema": "Community", "description": "Communities" },
+    "/communities/{communityId}/messages/{messageId}": { "schema": "CommunityMessage", "description": "Community messages" },
+    "/communities/{communityId}/members/{memberId}": { "schema": "CommunityMember", "description": "Community members" },
+    "/education/{resourceId}": { "schema": "Education", "description": "Educational content" },
+    "/reports/{reportId}": { "schema": "Report", "description": "User reports" }
+  }
+}

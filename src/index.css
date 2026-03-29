@@ -1,0 +1,112 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400&display=swap');
+@import "tailwindcss";
+
+:root {
+  --primary: #0066FF; /* Brand Blue */
+  --secondary: #00D4FF; /* Sky Blue */
+  --brand-bg: #F8F9FA; /* Light Grayish White */
+  --brand-surface: #FFFFFF; /* Pure White */
+  --brand-ink: #1A1A1A; /* Dark Ink */
+  --brand-gray: #E9ECEF; /* Light Gray */
+  --brand-accent: #33FF66; /* Brand Green */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-display: 'Playfair Display', serif;
+}
+
+@theme {
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-brand-bg: var(--brand-bg);
+  --color-brand-surface: var(--brand-surface);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-gray: var(--brand-gray);
+  --color-brand-accent: var(--brand-accent);
+  --font-sans: var(--font-sans);
+  --font-display: var(--font-display);
+  --background-image-brand-gradient: linear-gradient(135deg, #0066FF 0%, #00D4FF 50%, #33FF66 100%);
+  --background-image-gold-gradient: linear-gradient(135deg, #0066FF 0%, #00D4FF 50%, #33FF66 100%);
+}
+
+body {
+  @apply bg-brand-bg text-brand-ink selection:bg-primary selection:text-black;
+}
+
+.glass {
+  @apply bg-brand-surface/80 backdrop-blur-xl border border-black/5;
+}
+
+.gold-gradient {
+  @apply bg-gold-gradient;
+}
+
+.gold-text {
+  @apply text-transparent bg-clip-text bg-gold-gradient;
+}
+
+.premium-card {
+  @apply bg-brand-surface border border-brand-gray hover:border-primary/30 transition-all duration-500;
+}
+
+.btn-premium {
+  @apply bg-gold-gradient text-black font-bold px-8 py-3 rounded-full hover:scale-105 active:scale-95 transition-all shadow-lg shadow-primary/20;
+}
+
+.input-premium {
+  @apply bg-brand-gray border border-black/5 rounded-2xl p-4 outline-none focus:ring-2 focus:ring-primary/20 transition-all text-brand-ink placeholder:text-brand-ink/30;
+}
+
+.markdown-body {
+  @apply text-brand-ink/80 leading-relaxed;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  @apply text-brand-ink font-black tracking-tight mt-8 mb-4;
+}
+
+.markdown-body h1 { @apply text-3xl; }
+.markdown-body h2 { @apply text-2xl; }
+.markdown-body h3 { @apply text-xl; }
+
+.markdown-body p {
+  @apply mb-4;
+}
+
+.markdown-body ul, .markdown-body ol {
+  @apply mb-6 pl-6 space-y-2;
+}
+
+.markdown-body ul {
+  @apply list-disc;
+}
+
+.markdown-body ol {
+  @apply list-decimal;
+}
+
+.markdown-body li {
+  @apply pl-2;
+}
+
+.markdown-body strong {
+  @apply text-brand-ink font-black;
+}
+
+.markdown-body blockquote {
+  @apply border-l-4 border-primary/30 pl-6 py-2 italic bg-primary/5 rounded-r-2xl my-6;
+}
+
+.markdown-body hr {
+  @apply border-brand-gray my-10;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-brand-gray rounded-full hover:bg-primary/30 transition-colors;
+}

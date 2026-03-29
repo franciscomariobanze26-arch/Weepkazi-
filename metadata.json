@@ -1,0 +1,9 @@
+{
+  "name": "Weepkazi ",
+  "description": "Transforma o teu talento em oportunidade. A plataforma para jovens em Moçambique brilharem.",
+  "requestFramePermissions": [
+    "geolocation",
+    "microphone",
+    "camera"
+  ]
+}
