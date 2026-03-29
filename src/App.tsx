@@ -102,7 +102,7 @@ import {
   Image as ImageIcon,
   Pause,
 } from 'lucide-react';
-import { App } from '@capacitor/app';
+import { App as CapApp } from '@capacitor/app';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -6913,9 +6913,9 @@ const BackButtonHandler: React.FC = () => {
   const location = useLocation();
 
   useEffect(() => {
-    const backListener = App.addListener('backButton', () => {
+    const backListener = CapApp.addListener('backButton', () => {
       if (location.pathname === '/') {
-        App.exitApp();
+        CapApp.exitApp();
       } else {
         navigate(-1);
       }
