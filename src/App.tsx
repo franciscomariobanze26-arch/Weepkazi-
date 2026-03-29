@@ -5,7 +5,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { 
-  BrowserRouter as Router, 
+  HashRouter as Router, 
   Routes, 
   Route, 
   Link, 
@@ -593,6 +593,14 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   };
 
   useEffect(() => {
+    // Safety timeout to prevent stuck loading state
+    const timeoutId = setTimeout(() => {
+      if (loading) {
+        console.warn('Auth loading timed out. Forcing loading state to false.');
+        setLoading(false);
+      }
+    }, 10000); // 10 seconds timeout
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
       if (firebaseUser) {
@@ -657,6 +665,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         setProfile(null);
       }
       setLoading(false);
+      clearTimeout(timeoutId);
     });
 
     // Test connection
@@ -671,7 +680,10 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     };
     testConnection();
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      clearTimeout(timeoutId);
+    };
   }, []);
 
   // Update online status periodically
