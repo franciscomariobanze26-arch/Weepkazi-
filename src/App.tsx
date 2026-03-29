@@ -17,10 +17,13 @@ import {
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider, 
   signOut,
   User as FirebaseUser
 } from 'firebase/auth';
+import { Capacitor } from '@capacitor/core';
 import { 
   collection, 
   doc, 
@@ -601,6 +604,13 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       }
     }, 10000); // 10 seconds timeout
 
+    // Handle redirect result for Capacitor
+    if (Capacitor.isNativePlatform()) {
+      getRedirectResult(auth).catch((error) => {
+        console.error('Redirect result error:', error);
+      });
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setUser(firebaseUser);
       if (firebaseUser) {
@@ -708,7 +718,12 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const signIn = async () => {
     const provider = new GoogleAuthProvider();
     try {
-      await signInWithPopup(auth, provider);
+      if (Capacitor.isNativePlatform()) {
+        // Use redirect for native platforms to avoid popup issues
+        await signInWithRedirect(auth, provider);
+      } else {
+        await signInWithPopup(auth, provider);
+      }
     } catch (error: any) {
       console.error('Sign in error:', error);
       // Show more descriptive error to user

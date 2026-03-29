@@ -5,7 +5,9 @@ const config: CapacitorConfig = {
   appName: 'Weepkazi',
   webDir: 'dist',
   server: {
-    androidScheme: 'https'
+    androidScheme: 'https',
+    hostname: 'weepkazi.app',
+    cleartext: true
   }
 };
 
