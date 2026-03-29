@@ -4384,7 +4384,7 @@ const CourseModal: React.FC<{ course: string; onClose: () => void }> = ({ course
   useEffect(() => {
     const fetchCourse = async () => {
       try {
-        const apiKey = process.env.GEMINI_API_KEY;
+        const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
         if (!apiKey || apiKey === 'undefined') {
           setContent('# ⚠️ Indisponível\n\nO serviço de IA não está configurado. Por favor, adicione uma chave de API válida para aceder aos cursos.');
           setLoading(false);
