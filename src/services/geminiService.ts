@@ -1,9 +1,30 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiInstance: GoogleGenAI | null = null;
+
+const getAI = () => {
+  if (aiInstance) return aiInstance;
+  
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === 'undefined') {
+    console.warn('Gemini API key is missing. AI features will be disabled.');
+    return null;
+  }
+  
+  try {
+    aiInstance = new GoogleGenAI({ apiKey });
+    return aiInstance;
+  } catch (error) {
+    console.error('Failed to initialize Gemini AI:', error);
+    return null;
+  }
+};
 
 export const generateLogo = async (prompt: string): Promise<string | null> => {
   try {
+    const ai = getAI();
+    if (!ai) return null;
+
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {
@@ -34,6 +55,9 @@ export const generateLogo = async (prompt: string): Promise<string | null> => {
 
 export const getSmartRecommendations = async (userNeed: string, availableServices: any[]): Promise<string[]> => {
   try {
+    const ai = getAI();
+    if (!ai) return [];
+
     const servicesContext = availableServices.map(s => ({
       id: s.id,
       title: s.title,
@@ -73,6 +97,9 @@ export interface ProfileValidationResult {
 
 export const validateAndImproveProfile = async (displayName: string, bio: string, phoneNumber: string): Promise<ProfileValidationResult> => {
   try {
+    const ai = getAI();
+    if (!ai) return { isValid: true, isPhoneValid: true };
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `Analisa este perfil de freelancer para uma plataforma em Moçambique:
@@ -117,6 +144,9 @@ export interface ServiceValidationResult {
 
 export const validateAndImproveService = async (title: string, description: string, category: string): Promise<ServiceValidationResult> => {
   try {
+    const ai = getAI();
+    if (!ai) return { isValid: true };
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
       contents: `Analisa este serviço para uma plataforma de freelancers em Moçambique:
