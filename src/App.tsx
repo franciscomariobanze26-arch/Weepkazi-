@@ -609,6 +609,12 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       getRedirectResult(auth).catch((error) => {
         console.error('Redirect result error:', error);
       });
+
+      // Handle incoming deep links
+      CapApp.addListener('appUrlOpen', (data: any) => {
+        console.log('App opened with URL:', data.url);
+        // The getRedirectResult will handle the actual auth state change
+      });
     }
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
