@@ -709,8 +709,22 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Sign in error:', error);
+      // Show more descriptive error to user
+      let message = 'Erro ao fazer login. Tente novamente.';
+      if (error.code === 'auth/unauthorized-domain') {
+        message = 'Domínio não autorizado no Firebase Console. Adicione este domínio aos "Authorized Domains".';
+      } else if (error.code === 'auth/operation-not-allowed') {
+        message = 'O login com Google não está ativado no Firebase Console.';
+      } else if (error.code === 'auth/popup-blocked') {
+        message = 'O popup de login foi bloqueado pelo navegador.';
+      } else if (error.code === 'auth/invalid-action-code') {
+        message = 'Ação inválida. Verifique a configuração do Firebase.';
+      } else if (error.message) {
+        message = `Erro: ${error.message}`;
+      }
+      toast.error(message);
     }
   };
 
