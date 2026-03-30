@@ -17,6 +17,8 @@ import {
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
   GoogleAuthProvider, 
   signOut,
   signInWithCredential,
@@ -686,6 +688,24 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       clearTimeout(timeoutId);
     });
 
+    // Handle Redirect Result (Important for Mobile Web)
+    getRedirectResult(auth).then((result) => {
+      if (result) {
+        console.log('Successfully signed in via redirect:', result.user.uid);
+      }
+    }).catch((error) => {
+      console.error('Error handling redirect result:', error);
+      if (error.message && (error.message.includes('missing initial state') || error.message.includes('sessionStorage'))) {
+        toast.error('Erro de sessão detetado. Tente fazer login novamente abrindo em uma nova aba.', {
+          duration: 6000,
+          action: {
+            label: 'Abrir Agora',
+            onClick: () => window.open(window.location.href, '_blank')
+          }
+        });
+      }
+    });
+
     // Test connection
     const testConnection = async () => {
       try {
@@ -739,7 +759,9 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     }
 
     // 2. Lógica para Web (Iframe/Browser)
-    if (isInIframe() && /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+    const isMobileBrowser = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    if (isInIframe() && isMobileBrowser) {
       toast.info('Para fazer login com segurança no telemóvel, abra o aplicativo em uma nova aba.', {
         duration: 10000,
         action: {
@@ -750,17 +772,21 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     }
 
     const provider = new GoogleAuthProvider();
-    // Forçar o domínio no provedor também
     provider.setCustomParameters({
       'prompt': 'select_account'
     });
     
     console.log('Starting sign in process. Origin:', window.location.origin);
     try {
-      // Use signInWithPopup for all platforms to ensure the authDomain proxy is used
-      // This avoids showing "localhost" in the Google login screen
-      console.log('Starting sign in with popup. authDomain:', (auth as any).config.authDomain);
-      await signInWithPopup(auth, provider);
+      // For mobile browsers (not native), use Redirect as it's more reliable than Popup
+      // This ensures the flow returns correctly to the app after "Confirmar"
+      if (isMobileBrowser && !isInIframe()) {
+        console.log('Using signInWithRedirect for mobile browser');
+        await signInWithRedirect(auth, provider);
+      } else {
+        console.log('Using signInWithPopup for web/iframe');
+        await signInWithPopup(auth, provider);
+      }
     } catch (error: any) {
       console.error('Sign in error:', error);
       // Show more descriptive error to user
