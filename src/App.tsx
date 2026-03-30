@@ -772,7 +772,15 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       } else if (error.code === 'auth/popup-blocked') {
         message = 'O popup de login foi bloqueado pelo navegador.';
       } else if (error.message && (error.message.includes('missing initial state') || error.message.includes('sessionStorage'))) {
-        message = 'Erro de sessão. Por favor, abra o aplicativo em uma nova aba para fazer login.';
+        message = 'Erro de sessão detetado. Vamos abrir o app numa nova aba para corrigir.';
+        toast.error(message, {
+          duration: 6000,
+          action: {
+            label: 'Abrir Agora',
+            onClick: () => window.open(window.location.href, '_blank')
+          }
+        });
+        return;
       } else if (error.code === 'auth/invalid-action-code') {
         message = 'Ação inválida. Verifique a configuração do Firebase.';
       } else if (error.message) {
@@ -2217,13 +2225,22 @@ const LoginPrompt = ({ message = "Precisa entrar para continuar" }: { message?: 
           Entrar com Google
         </button>
         {isInIframe() && (
-          <button 
-            onClick={() => window.open(window.location.href, '_blank')}
-            className="w-full py-4 mt-4 bg-brand-bg text-brand-ink rounded-2xl font-black text-sm hover:bg-brand-gray transition-all flex items-center justify-center gap-2"
-          >
-            <Globe className="w-4 h-4" />
-            Abrir em nova aba para login seguro
-          </button>
+          <div className="mt-6 p-4 bg-amber-50 rounded-2xl border border-amber-100">
+            <p className="text-[10px] text-amber-700 font-bold uppercase tracking-widest mb-2 flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3" /> 
+              Atenção Utilizador de Telemóvel
+            </p>
+            <p className="text-xs text-amber-600 font-medium mb-3">
+              Para evitar erros de login no Android/iOS, use o botão abaixo para abrir o KAZI numa aba segura.
+            </p>
+            <button 
+              onClick={() => window.open(window.location.href, '_blank')}
+              className="w-full py-3 bg-amber-500 text-white rounded-xl font-black text-xs hover:bg-amber-600 transition-all flex items-center justify-center gap-2 shadow-lg shadow-amber-200"
+            >
+              <Globe className="w-4 h-4" />
+              ABRIR EM NOVA ABA (RECOMENDADO)
+            </button>
+          </div>
         )}
       </motion.div>
     </div>
