@@ -138,6 +138,14 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+const isInIframe = () => {
+  try {
+    return window.self !== window.top;
+  } catch (e) {
+    return true;
+  }
+};
+
 const CreateJob: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const { profile } = useAuth();
   const [loading, setLoading] = useState(false);
@@ -268,7 +276,7 @@ const CreateJob: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 className="w-full bg-gray-50 border-none rounded-2xl px-6 py-4 text-sm font-bold focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
               >
                 <option value="">Selecionar Distrito</option>
-                {formData.province && MOZAMBIQUE_LOCATIONS[formData.province].map(d => (
+                {formData.province && MOZAMBIQUE_LOCATIONS[formData.province] && MOZAMBIQUE_LOCATIONS[formData.province].map(d => (
                   <option key={d} value={d}>{d}</option>
                 ))}
               </select>
@@ -714,6 +722,16 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   }, [user?.uid, profile?.uid]);
 
   const signIn = async () => {
+    if (isInIframe() && /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+      toast.info('Para fazer login com segurança no telemóvel, abra o aplicativo em uma nova aba.', {
+        duration: 10000,
+        action: {
+          label: 'Abrir Nova Aba',
+          onClick: () => window.open(window.location.href, '_blank')
+        }
+      });
+    }
+
     const provider = new GoogleAuthProvider();
     // Forçar o domínio no provedor também
     provider.setCustomParameters({
@@ -736,6 +754,8 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         message = 'O login com Google não está ativado no Firebase Console.';
       } else if (error.code === 'auth/popup-blocked') {
         message = 'O popup de login foi bloqueado pelo navegador.';
+      } else if (error.message && (error.message.includes('missing initial state') || error.message.includes('sessionStorage'))) {
+        message = 'Erro de sessão. Por favor, abra o aplicativo em uma nova aba para fazer login.';
       } else if (error.code === 'auth/invalid-action-code') {
         message = 'Ação inválida. Verifique a configuração do Firebase.';
       } else if (error.message) {
@@ -774,7 +794,10 @@ const Onboarding: React.FC<{ onSkip?: () => void }> = ({ onSkip }) => {
     phoneNumber: '',
     photoURL: profile?.photoURL || '',
     lookingFor: '',
-    location: { province: '', district: '' },
+    location: { 
+      province: profile?.location?.province || Object.keys(MOZAMBIQUE_LOCATIONS)[0], 
+      district: profile?.location?.district || MOZAMBIQUE_LOCATIONS[Object.keys(MOZAMBIQUE_LOCATIONS)[0]][0] 
+    },
     acceptedTerms: false
   });
 
@@ -1028,13 +1051,17 @@ const Onboarding: React.FC<{ onSkip?: () => void }> = ({ onSkip }) => {
                 <label className="block text-xs font-bold uppercase tracking-widest text-brand-ink/40 mb-2">Província</label>
                 <select 
                   value={formData.location.province}
-                  onChange={e => setFormData({
-                    ...formData, 
-                    location: { 
-                      province: e.target.value, 
-                      district: MOZAMBIQUE_LOCATIONS[e.target.value][0] 
-                    }
-                  })}
+                  onChange={e => {
+                    const province = e.target.value;
+                    const districts = MOZAMBIQUE_LOCATIONS[province] || [];
+                    setFormData({
+                      ...formData, 
+                      location: { 
+                        province, 
+                        district: districts[0] || '' 
+                      }
+                    });
+                  }}
                   className="w-full p-4 bg-brand-bg rounded-2xl outline-none focus:ring-2 focus:ring-primary/20 transition-all font-bold text-brand-ink"
                 >
                   {Object.keys(MOZAMBIQUE_LOCATIONS).map(p => (
@@ -1052,7 +1079,7 @@ const Onboarding: React.FC<{ onSkip?: () => void }> = ({ onSkip }) => {
                   })}
                   className="w-full p-4 bg-brand-bg rounded-2xl outline-none focus:ring-2 focus:ring-primary/20 transition-all font-bold text-brand-ink"
                 >
-                  {MOZAMBIQUE_LOCATIONS[formData.location.province].map(d => (
+                  {(MOZAMBIQUE_LOCATIONS[formData.location.province] || []).map(d => (
                     <option key={d} value={d}>{d}</option>
                   ))}
                 </select>
@@ -2034,7 +2061,7 @@ const ServiceList = () => {
                     className="w-full p-3 bg-brand-bg rounded-xl outline-none focus:ring-2 focus:ring-primary/20 transition-all text-sm font-bold"
                   >
                     <option value="">Todos os Distritos</option>
-                    {MOZAMBIQUE_LOCATIONS[selectedProvince].map(d => (
+                    {selectedProvince && MOZAMBIQUE_LOCATIONS[selectedProvince] && MOZAMBIQUE_LOCATIONS[selectedProvince].map(d => (
                       <option key={d} value={d}>{d}</option>
                     ))}
                   </select>
@@ -2172,6 +2199,15 @@ const LoginPrompt = ({ message = "Precisa entrar para continuar" }: { message?: 
         >
           Entrar com Google
         </button>
+        {isInIframe() && (
+          <button 
+            onClick={() => window.open(window.location.href, '_blank')}
+            className="w-full py-4 mt-4 bg-brand-bg text-brand-ink rounded-2xl font-black text-sm hover:bg-brand-gray transition-all flex items-center justify-center gap-2"
+          >
+            <Globe className="w-4 h-4" />
+            Abrir em nova aba para login seguro
+          </button>
+        )}
       </motion.div>
     </div>
   );
@@ -4112,8 +4148,8 @@ const EditProfileModal = ({ onClose }: { onClose: () => void }) => {
     lookingFor: profile?.lookingFor || '',
     workExamples: profile?.workExamples || [],
     location: { 
-      province: profile?.location?.province || '', 
-      district: profile?.location?.district || '' 
+      province: profile?.location?.province || Object.keys(MOZAMBIQUE_LOCATIONS)[0], 
+      district: profile?.location?.district || MOZAMBIQUE_LOCATIONS[Object.keys(MOZAMBIQUE_LOCATIONS)[0]][0] 
     },
     socialLinks: profile?.socialLinks || {
       instagram: '',
@@ -4250,13 +4286,17 @@ const EditProfileModal = ({ onClose }: { onClose: () => void }) => {
               <label className="block text-xs font-bold uppercase tracking-widest text-brand-ink/40 mb-2">Província</label>
               <select 
                 value={formData.location.province}
-                onChange={e => setFormData({
-                  ...formData, 
-                  location: { 
-                    province: e.target.value, 
-                    district: MOZAMBIQUE_LOCATIONS[e.target.value][0] 
-                  }
-                })}
+                onChange={e => {
+                  const province = e.target.value;
+                  const districts = MOZAMBIQUE_LOCATIONS[province] || [];
+                  setFormData({
+                    ...formData, 
+                    location: { 
+                      province, 
+                      district: districts[0] || '' 
+                    }
+                  });
+                }}
                 className="w-full p-4 bg-brand-bg rounded-2xl outline-none focus:ring-2 focus:ring-primary/20 transition-all font-bold"
               >
                 {Object.keys(MOZAMBIQUE_LOCATIONS).map(p => (
@@ -4274,7 +4314,7 @@ const EditProfileModal = ({ onClose }: { onClose: () => void }) => {
                 })}
                 className="w-full p-4 bg-brand-bg rounded-2xl outline-none focus:ring-2 focus:ring-primary/20 transition-all font-bold"
               >
-                {MOZAMBIQUE_LOCATIONS[formData.location.province].map(d => (
+                {(MOZAMBIQUE_LOCATIONS[formData.location.province] || []).map(d => (
                   <option key={d} value={d}>{d}</option>
                 ))}
               </select>
@@ -4526,8 +4566,8 @@ const AddServiceModal = ({ onClose, isStandalone = false }: { onClose: () => voi
     price: 0,
     photoURL: '',
     location: { 
-      province: profile?.location?.province || '', 
-      district: profile?.location?.district || '' 
+      province: profile?.location?.province || Object.keys(MOZAMBIQUE_LOCATIONS)[0], 
+      district: profile?.location?.district || MOZAMBIQUE_LOCATIONS[Object.keys(MOZAMBIQUE_LOCATIONS)[0]][0] 
     }
   });
 
@@ -4620,13 +4660,17 @@ const AddServiceModal = ({ onClose, isStandalone = false }: { onClose: () => voi
             <label className="block text-xs font-bold uppercase tracking-widest text-brand-ink/60 mb-2">Província</label>
             <select 
               value={formData.location.province}
-              onChange={e => setFormData({
-                ...formData, 
-                location: { 
-                  province: e.target.value, 
-                  district: MOZAMBIQUE_LOCATIONS[e.target.value][0] 
-                }
-              })}
+              onChange={e => {
+                const province = e.target.value;
+                const districts = MOZAMBIQUE_LOCATIONS[province] || [];
+                setFormData({
+                  ...formData, 
+                  location: { 
+                    province, 
+                    district: districts[0] || '' 
+                  }
+                });
+              }}
               className="w-full p-4 bg-brand-bg rounded-2xl outline-none focus:ring-2 focus:ring-primary/20 transition-all font-bold"
             >
               {Object.keys(MOZAMBIQUE_LOCATIONS).map(p => (
@@ -4644,7 +4688,7 @@ const AddServiceModal = ({ onClose, isStandalone = false }: { onClose: () => voi
               })}
               className="w-full p-4 bg-brand-bg rounded-2xl outline-none focus:ring-2 focus:ring-primary/20 transition-all font-bold"
             >
-              {MOZAMBIQUE_LOCATIONS[formData.location.province].map(d => (
+              {(MOZAMBIQUE_LOCATIONS[formData.location.province] || []).map(d => (
                 <option key={d} value={d}>{d}</option>
               ))}
             </select>

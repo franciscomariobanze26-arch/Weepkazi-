@@ -1,7 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { 
   initializeAuth, 
-  indexedDBLocalPersistence, 
+  browserLocalPersistence, 
   browserPopupRedirectResolver 
 } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
@@ -23,7 +23,7 @@ export const db = getFirestore(app, finalConfig.firestoreDatabaseId);
 
 // Use initializeAuth for better control in native environments
 export const auth = initializeAuth(app, {
-  persistence: indexedDBLocalPersistence,
+  persistence: browserLocalPersistence,
   popupRedirectResolver: browserPopupRedirectResolver,
 });
 
