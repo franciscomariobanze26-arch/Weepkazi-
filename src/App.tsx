@@ -17,8 +17,6 @@ import {
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
-  signInWithRedirect,
-  getRedirectResult,
   GoogleAuthProvider, 
   signOut,
   User as FirebaseUser
@@ -607,23 +605,8 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
     // Handle redirect result for Capacitor
     if (Capacitor.isNativePlatform()) {
-      getRedirectResult(auth).catch((error) => {
-        console.error('Redirect result error:', error);
-      });
-
-      // Handle incoming deep links
-      CapApp.addListener('appUrlOpen', async (data: any) => {
-        console.log('App opened with URL:', data.url);
-        // When the app is opened via a deep link, we check for redirect result
-        try {
-          const result = await getRedirectResult(auth);
-          if (result) {
-            console.log('Redirect result found after deep link:', result.user);
-          }
-        } catch (error) {
-          console.error('Redirect result error after deep link:', error);
-        }
-      });
+      // No longer using getRedirectResult as we switched to signInWithPopup
+      // This helps avoid localhost issues in native environments
     }
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -732,15 +715,17 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
   const signIn = async () => {
     const provider = new GoogleAuthProvider();
+    // Forçar o domínio no provedor também
+    provider.setCustomParameters({
+      'prompt': 'select_account'
+    });
+    
+    console.log('Starting sign in process. Origin:', window.location.origin);
     try {
-      if (Capacitor.isNativePlatform()) {
-        // Use Browser plugin to open the auth URL if needed, 
-        // but signInWithRedirect is the standard way for JS SDK.
-        // We ensure the authDomain is correct in the config.
-        await signInWithRedirect(auth, provider);
-      } else {
-        await signInWithPopup(auth, provider);
-      }
+      // Use signInWithPopup for all platforms to ensure the authDomain proxy is used
+      // This avoids showing "localhost" in the Google login screen
+      console.log('Starting sign in with popup. authDomain:', (auth as any).config.authDomain);
+      await signInWithPopup(auth, provider);
     } catch (error: any) {
       console.error('Sign in error:', error);
       // Show more descriptive error to user
