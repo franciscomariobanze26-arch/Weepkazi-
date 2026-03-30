@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "1073082140315",
+    "project_id": "gen-lang-client-0802512270",
+    "storage_bucket": "gen-lang-client-0802512270.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1073082140315:android:461ad8f3f2e4a7a681283e",
+        "android_client_info": {
+          "package_name": "com.weepkazi.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1073082140315-r67npvo8e3n4mb9de8iq78mv9tsb5ang.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.weepkazi.app",
+            "certificate_hash": "cf39f9b5330006885c7002e88cf9f24dcd59e3bc"
+          }
+        },
+        {
+          "client_id": "1073082140315-m283rloq4fa627et3pqvk32eet4hsne1.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC8pMxdLR4uD2L2TiuIyT-V7LYR5sbk-0c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1073082140315-m283rloq4fa627et3pqvk32eet4hsne1.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

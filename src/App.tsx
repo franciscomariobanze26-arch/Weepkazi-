@@ -105,6 +105,7 @@ import {
   Image as ImageIcon,
   Pause,
 } from 'lucide-react';
+import { Browser } from '@capacitor/browser';
 import { App as CapApp } from '@capacitor/app';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
@@ -611,9 +612,17 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       });
 
       // Handle incoming deep links
-      CapApp.addListener('appUrlOpen', (data: any) => {
+      CapApp.addListener('appUrlOpen', async (data: any) => {
         console.log('App opened with URL:', data.url);
-        // The getRedirectResult will handle the actual auth state change
+        // When the app is opened via a deep link, we check for redirect result
+        try {
+          const result = await getRedirectResult(auth);
+          if (result) {
+            console.log('Redirect result found after deep link:', result.user);
+          }
+        } catch (error) {
+          console.error('Redirect result error after deep link:', error);
+        }
       });
     }
 
@@ -725,7 +734,9 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     const provider = new GoogleAuthProvider();
     try {
       if (Capacitor.isNativePlatform()) {
-        // Use redirect for native platforms to avoid popup issues
+        // Use Browser plugin to open the auth URL if needed, 
+        // but signInWithRedirect is the standard way for JS SDK.
+        // We ensure the authDomain is correct in the config.
         await signInWithRedirect(auth, provider);
       } else {
         await signInWithPopup(auth, provider);
