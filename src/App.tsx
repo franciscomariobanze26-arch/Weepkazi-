@@ -19,6 +19,7 @@ import {
   signInWithPopup, 
   GoogleAuthProvider, 
   signOut,
+  signInWithCredential,
   User as FirebaseUser
 } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
@@ -613,8 +614,9 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
 
     // Handle redirect result for Capacitor
     if (Capacitor.isNativePlatform()) {
-      // No longer using getRedirectResult as we switched to signInWithPopup
-      // This helps avoid localhost issues in native environments
+      import('@codetrix-studio/capacitor-google-auth').then(({ GoogleAuth }) => {
+        GoogleAuth.initialize();
+      });
     }
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -722,6 +724,21 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   }, [user?.uid, profile?.uid]);
 
   const signIn = async () => {
+    // 1. Tentar Login Nativo (Dentro do App)
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const { GoogleAuth } = await import('@codetrix-studio/capacitor-google-auth');
+        console.log('Iniciando Login Nativo...');
+        const nativeUser = await GoogleAuth.signIn();
+        const credential = GoogleAuthProvider.credential(nativeUser.authentication.idToken);
+        await signInWithCredential(auth, credential);
+        return;
+      } catch (err) {
+        console.error('Login nativo falhou, tentando via web:', err);
+      }
+    }
+
+    // 2. Lógica para Web (Iframe/Browser)
     if (isInIframe() && /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
       toast.info('Para fazer login com segurança no telemóvel, abra o aplicativo em uma nova aba.', {
         duration: 10000,
