@@ -22,6 +22,12 @@ import {
   GoogleAuthProvider, 
   signOut,
   signInWithCredential,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  sendSignInLinkToEmail,
+  isSignInWithEmailLink,
+  signInWithEmailLink,
   User as FirebaseUser
 } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
@@ -185,7 +191,7 @@ const CreateJob: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         type: formData.type,
         authorId: profile.uid,
         authorName: profile.displayName,
-        authorPhoto: profile.photoURL,
+        authorPhoto: profile.photoURL || null,
         createdAt: serverTimestamp(),
         status: 'open'
       });
@@ -484,6 +490,9 @@ interface AuthContextType {
   profile: UserProfile | null;
   loading: boolean;
   signIn: () => Promise<void>;
+  signInWithEmail: (email: string, pass: string) => Promise<void>;
+  signUpWithEmail: (email: string, pass: string) => Promise<void>;
+  resetPassword: (email: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshProfile: (uid: string) => Promise<void>;
 }
@@ -664,7 +673,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
               uid: firebaseUser.uid,
               displayName: displayName,
               handle: handle,
-              photoURL: firebaseUser.photoURL || undefined,
+              photoURL: firebaseUser.photoURL || null,
               role: 'client',
               isComplete: false,
               createdAt: serverTimestamp(),
@@ -824,8 +833,105 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     }
   };
 
+  const signInWithEmail = async (email: string, pass: string) => {
+    try {
+      await signInWithEmailAndPassword(auth, email, pass);
+    } catch (error: any) {
+      console.error('Email sign in error:', error);
+      let message = 'Erro ao entrar. Verifique os seus dados.';
+      if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+        message = 'E-mail ou palavra-passe incorretos.';
+      } else if (error.code === 'auth/invalid-email') {
+        message = 'E-mail inválido.';
+      }
+      toast.error(message);
+      throw error;
+    }
+  };
+
+  const signUpWithEmail = async (email: string, pass: string) => {
+    try {
+      await createUserWithEmailAndPassword(auth, email, pass);
+    } catch (error: any) {
+      console.error('Email sign up error:', error);
+      let message = 'Erro ao criar conta. Tente novamente.';
+      if (error.code === 'auth/email-already-in-use') {
+        message = 'Este e-mail já está registado. Tente iniciar sessão.';
+      } else if (error.code === 'auth/weak-password') {
+        message = 'A palavra-passe deve ter pelo menos 6 caracteres.';
+      } else if (error.code === 'auth/invalid-email') {
+        message = 'E-mail inválido.';
+      }
+      toast.error(message);
+      throw error;
+    }
+  };
+
+  const resetPassword = async (email: string) => {
+    console.log('Iniciando recuperação por Link Mágico para:', email);
+    try {
+      const actionCodeSettings = {
+        // O URL para onde o utilizador será redirecionado. Deve estar na lista de domínios autorizados no Firebase.
+        url: window.location.origin,
+        handleCodeInApp: true,
+      };
+
+      await sendSignInLinkToEmail(auth, email, actionCodeSettings);
+      
+      // Guardamos o e-mail localmente para não termos de perguntar novamente quando o link for clicado
+      window.localStorage.setItem('emailForSignIn', email);
+      
+      console.log('Link de recuperação enviado com sucesso.');
+      toast.success('Link de acesso enviado! Verifique o seu e-mail (e a pasta de spam).');
+    } catch (error: any) {
+      console.error('Erro detalhado no envio do link mágico:', error);
+      let message = 'Erro ao enviar link de acesso.';
+      if (error.code === 'auth/invalid-email') {
+        message = 'O formato do e-mail é inválido.';
+      } else if (error.code === 'auth/too-many-requests') {
+        message = 'Demasiadas tentativas. Tente novamente mais tarde.';
+      }
+      toast.error(message);
+      throw error;
+    }
+  };
+
+  // Efeito para detetar e processar links de login por e-mail
+  useEffect(() => {
+    const handleMagicLink = async () => {
+      if (isSignInWithEmailLink(auth, window.location.href)) {
+        let email = window.localStorage.getItem('emailForSignIn');
+        
+        // Se o e-mail não estiver no localStorage (ex: abriu noutro browser), pedimos ao utilizador
+        if (!email) {
+          email = window.prompt('Por favor, confirme o seu e-mail para completar o acesso:');
+        }
+
+        if (email) {
+          setLoading(true);
+          try {
+            const result = await signInWithEmailLink(auth, email, window.location.href);
+            window.localStorage.removeItem('emailForSignIn');
+            console.log('Login via link mágico concluído com sucesso:', result.user.uid);
+            toast.success('Bem-vindo de volta! Acesso recuperado com sucesso.');
+            
+            // Limpar o URL para remover os parâmetros do Firebase
+            window.history.replaceState({}, document.title, window.location.origin);
+          } catch (error: any) {
+            console.error('Erro ao completar login via link mágico:', error);
+            toast.error('O link de acesso expirou ou é inválido.');
+          } finally {
+            setLoading(false);
+          }
+        }
+      }
+    };
+
+    handleMagicLink();
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signIn, logout, refreshProfile }}>
+    <AuthContext.Provider value={{ user, profile, loading, signIn, signInWithEmail, signUpWithEmail, resetPassword, logout, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );
@@ -1508,9 +1614,9 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     </button>
                   </div>
                 ) : (
-                  <button onClick={signIn} className="bg-primary text-white px-8 py-2.5 rounded-full text-sm font-bold hover:bg-primary/90 transition-all shadow-xl shadow-primary/20 hover:-translate-y-0.5 active:translate-y-0">
+                  <Link to="/login" className="bg-primary text-white px-8 py-2.5 rounded-full text-sm font-bold hover:bg-primary/90 transition-all shadow-xl shadow-primary/20 hover:-translate-y-0.5 active:translate-y-0">
                     Entrar
-                  </button>
+                  </Link>
                 )}
               </div>
             </div>
@@ -1572,7 +1678,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     <button onClick={() => setShowLogoutConfirm(true)} className="block text-lg font-bold text-red-600">Sair</button>
                   </>
                 ) : (
-                  <button onClick={() => { signIn(); setIsMenuOpen(false); }} className="w-full bg-primary text-white py-4 rounded-2xl font-bold">Entrar</button>
+                  <Link to="/login" onClick={() => setIsMenuOpen(false)} className="w-full bg-primary text-white py-4 rounded-2xl font-bold text-center block">Entrar</Link>
                 )}
               </div>
             </motion.div>
@@ -2231,7 +2337,52 @@ const ServiceList = () => {
 };
 
 const LoginPrompt = ({ message = "Precisa entrar para continuar" }: { message?: string }) => {
-  const { signIn } = useAuth();
+  const { profile, signIn, signInWithEmail, signUpWithEmail, resetPassword } = useAuth();
+  const navigate = useNavigate();
+  const [showEmailForm, setShowEmailForm] = useState(false);
+  const [showResetForm, setShowResetForm] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (profile) {
+      navigate('/');
+    }
+  }, [profile, navigate]);
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    console.log('handleEmailAuth triggered. Mode:', showResetForm ? 'Reset' : (isSignUp ? 'SignUp' : 'SignIn'), 'Email:', email);
+    if (!email || (!showResetForm && !password)) {
+      toast.error('Preencha todos os campos.');
+      return;
+    }
+    setLoading(true);
+    try {
+      if (showResetForm) {
+        console.log('Calling resetPassword...');
+        await resetPassword(email);
+        setResetSent(true);
+      } else if (isSignUp) {
+        console.log('Calling signUpWithEmail...');
+        await signUpWithEmail(email, password);
+      } else {
+        console.log('Calling signInWithEmail...');
+        await signInWithEmail(email, password);
+      }
+    } catch (err: any) {
+      console.error('Erro na autenticação por e-mail:', err);
+      if (isSignUp && err.code === 'auth/email-already-in-use') {
+        setIsSignUp(false);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-[60vh] flex items-center justify-center p-4">
       <motion.div 
@@ -2244,12 +2395,127 @@ const LoginPrompt = ({ message = "Precisa entrar para continuar" }: { message?: 
         <p className="text-brand-ink/40 font-medium mb-10 leading-relaxed">
           Inicie sessão para aceder a todas as funcionalidades do KAZI, incluindo pedidos, mensagens e o seu perfil.
         </p>
-        <button 
-          onClick={signIn}
-          className="w-full py-5 bg-primary text-white rounded-2xl font-black text-lg hover:bg-primary/90 transition-all shadow-xl shadow-primary/20 hover:-translate-y-1 active:translate-y-0"
-        >
-          Entrar com Google
-        </button>
+        
+        {!showEmailForm ? (
+          <div className="w-full space-y-4">
+            <button 
+              onClick={signIn}
+              className="w-full py-5 bg-primary text-white rounded-2xl font-black text-lg hover:bg-primary/90 transition-all shadow-xl shadow-primary/20 hover:-translate-y-1 active:translate-y-0 flex items-center justify-center gap-3"
+            >
+              <img src="https://www.google.com/favicon.ico" className="w-5 h-5 grayscale invert brightness-0" alt="" />
+              Entrar com Google
+            </button>
+            
+            <button 
+              onClick={() => setShowEmailForm(true)}
+              className="w-full py-5 bg-brand-bg text-brand-ink rounded-2xl font-black text-lg hover:bg-brand-gray transition-all flex items-center justify-center gap-3"
+            >
+              <Mail className="w-5 h-5" />
+              Entrar com E-mail
+            </button>
+          </div>
+        ) : (
+          <form onSubmit={handleEmailAuth} className="w-full space-y-4">
+            <div className="text-left space-y-4">
+              {resetSent ? (
+                <div className="p-6 bg-green-50 rounded-2xl border border-green-100 text-center space-y-4">
+                  <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto">
+                    <Send className="w-6 h-6 text-green-600" />
+                  </div>
+                  <div className="space-y-2">
+                    <h4 className="font-black text-green-900">Link Enviado!</h4>
+                    <p className="text-xs text-green-700 font-bold leading-relaxed">
+                      Enviámos um link de acesso direto para <span className="underline">{email}</span>. Clique no link no seu e-mail para entrar automaticamente.
+                    </p>
+                  </div>
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setResetSent(false);
+                      setShowResetForm(false);
+                    }}
+                    className="w-full py-3 bg-green-600 text-white rounded-xl font-black text-sm hover:bg-green-700 transition-all"
+                  >
+                    Voltar ao Login
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-[10px] font-black uppercase tracking-widest text-brand-ink/40 mb-2 ml-2">E-mail</label>
+                    <input 
+                      type="email" 
+                      value={email}
+                      onChange={e => setEmail(e.target.value)}
+                      placeholder="exemplo@email.com"
+                      className="w-full p-4 bg-brand-bg rounded-2xl outline-none focus:ring-2 focus:ring-primary/20 transition-all font-bold text-brand-ink"
+                      required
+                    />
+                  </div>
+                  {!showResetForm && (
+                    <div>
+                      <label className="block text-[10px] font-black uppercase tracking-widest text-brand-ink/40 mb-2 ml-2">Palavra-passe</label>
+                      <input 
+                        type="password" 
+                        value={password}
+                        onChange={e => setPassword(e.target.value)}
+                        placeholder="••••••••"
+                        className="w-full p-4 bg-brand-bg rounded-2xl outline-none focus:ring-2 focus:ring-primary/20 transition-all font-bold text-brand-ink"
+                        required
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {!resetSent && (
+              <button 
+                type="submit"
+                disabled={loading}
+                className="w-full py-5 bg-primary text-white rounded-2xl font-black text-lg hover:bg-primary/90 transition-all shadow-xl shadow-primary/20 hover:-translate-y-1 active:translate-y-0 disabled:opacity-50"
+              >
+                {loading ? 'A processar...' : (showResetForm ? 'Enviar Link de Acesso' : (isSignUp ? 'Criar Conta' : 'Entrar'))}
+              </button>
+            )}
+
+            <div className="flex flex-col gap-2">
+              {!showResetForm && !resetSent && (
+                <button 
+                  type="button"
+                  onClick={() => setIsSignUp(!isSignUp)}
+                  className="text-xs font-bold text-primary hover:underline"
+                >
+                  {isSignUp ? 'Já tem conta? Entrar' : 'Não tem conta? Criar agora'}
+                </button>
+              )}
+              
+              {!isSignUp && !resetSent && (
+                <button 
+                  type="button"
+                  onClick={() => setShowResetForm(!showResetForm)}
+                  className="text-xs font-bold text-brand-ink/40 hover:text-primary transition-colors"
+                >
+                  {showResetForm ? 'Voltar para o login' : 'Esqueceu-se da palavra-passe?'}
+                </button>
+              )}
+
+              {!resetSent && (
+                <button 
+                  type="button"
+                  onClick={() => {
+                    setShowEmailForm(false);
+                    setShowResetForm(false);
+                  }}
+                  className="text-xs font-bold text-brand-ink/20 hover:text-brand-ink transition-colors mt-2"
+                >
+                  Voltar
+                </button>
+              )}
+            </div>
+          </form>
+        )}
+
         {isInIframe() && (
           <div className="mt-6 p-4 bg-amber-50 rounded-2xl border border-amber-100">
             <p className="text-[10px] text-amber-700 font-bold uppercase tracking-widest mb-2 flex items-center gap-1">
@@ -6123,7 +6389,7 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
       await setDoc(doc(db, 'communities', docRef.id, 'members', profile.uid), {
         uid: profile.uid,
         displayName: profile.displayName,
-        photoURL: profile.photoURL,
+        photoURL: profile.photoURL || null,
         status: 'approved',
         role: 'admin',
         joinedAt: serverTimestamp()
@@ -6408,7 +6674,7 @@ const CommunityChat: React.FC = () => {
       await setDoc(doc(db, 'communities', communityId, 'members', profile.uid), {
         uid: profile.uid,
         displayName: profile.displayName,
-        photoURL: profile.photoURL,
+        photoURL: profile.photoURL || null,
         status,
         role: 'member',
         joinedAt: serverTimestamp()
@@ -6476,7 +6742,7 @@ const CommunityChat: React.FC = () => {
       await addDoc(collection(db, 'communities', communityId, 'messages'), {
         senderId: profile.uid,
         senderName: profile.displayName,
-        senderPhoto: profile.photoURL,
+        senderPhoto: profile.photoURL || null,
         content: content || (finalType === 'image' ? 'Imagem' : (finalType === 'audio' ? 'Mensagem de voz' : '')),
         imageURL: imageURL || null,
         audioURL: audioURL || null,
@@ -7091,6 +7357,7 @@ export default function App() {
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/education" element={<EducationList />} />
                 <Route path="/admin" element={<AdminDashboard />} />
+                <Route path="/login" element={<LoginPrompt />} />
                 <Route path="/terms" element={<Terms />} />
                 <Route path="/privacy" element={<Privacy />} />
                 <Route path="/contact" element={<Contact />} />
