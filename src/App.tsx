@@ -52,6 +52,7 @@ import { ref, uploadBytes, getDownloadURL, uploadString } from 'firebase/storage
 import { auth, db, storage } from './firebase';
 import { compressImage } from './lib/imageUtils';
 import { AudioPlayer } from './components/AudioPlayer';
+import { ValidationService } from './services/validationService';
 import { 
   User as UserIcon, 
   Search, 
@@ -152,6 +153,28 @@ const isInIframe = () => {
   }
 };
 
+const safeToMillis = (ts: any): number => {
+  if (!ts) return 0;
+  try {
+    if (typeof ts.toMillis === 'function') return ts.toMillis();
+    if (ts.seconds !== undefined) return ts.seconds * 1000;
+    if (ts instanceof Date) return ts.getTime();
+    if (typeof ts === 'number') return ts;
+    if (typeof ts === 'string') {
+      const d = new Date(ts);
+      return isNaN(d.getTime()) ? 0 : d.getTime();
+    }
+  } catch (e) {
+    console.warn('Error converting timestamp to millis:', e);
+  }
+  return 0;
+};
+
+const safeToDate = (ts: any): Date => {
+  const millis = safeToMillis(ts);
+  return millis > 0 ? new Date(millis) : new Date();
+};
+
 const CreateJob: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const { profile } = useAuth();
   const [loading, setLoading] = useState(false);
@@ -171,6 +194,25 @@ const CreateJob: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
     if (!formData.title || !formData.description || !formData.company || !formData.province || !formData.district) {
       toast.error('Preenche todos os campos obrigatórios.');
+      return;
+    }
+
+    // Internal Validation Algorithm
+    const titleVal = ValidationService.validateContent(formData.title, 5);
+    if (!titleVal.valid) {
+      toast.error(`Título: ${titleVal.error}`);
+      return;
+    }
+
+    const descVal = ValidationService.validateContent(formData.description, 10);
+    if (!descVal.valid) {
+      toast.error(`Descrição: ${descVal.error}`);
+      return;
+    }
+
+    const companyVal = ValidationService.isValidData('name', formData.company);
+    if (!companyVal.valid) {
+      toast.error(`Empresa: ${companyVal.error}`);
       return;
     }
 
@@ -523,9 +565,10 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  toast.error(`Erro no Firestore (${operationType}): ${errInfo.error}`);
-  throw new Error(JSON.stringify(errInfo));
+  const fullErrorMsg = `Firestore Error (${operationType}): ${errInfo.error}`;
+  console.error(fullErrorMsg, JSON.stringify(errInfo));
+  toast.error(fullErrorMsg);
+  throw new Error(fullErrorMsg + ' ' + JSON.stringify(errInfo));
 }
 
 // --- Components ---
@@ -930,19 +973,39 @@ const Onboarding: React.FC<{ onSkip?: () => void }> = ({ onSkip }) => {
         toast.error('Por favor, preenche todos os campos obrigatórios (Nome, Handle, Idade e Telemóvel).');
         return false;
       }
-      if (formData.handle.length < 4) {
-        toast.error('O nome de utilizador deve ter pelo menos 3 caracteres (além do @).');
+
+      // Internal Validation Algorithm
+      const nameVal = ValidationService.isValidData('name', formData.displayName);
+      if (!nameVal.valid) {
+        toast.error(nameVal.error);
         return false;
       }
+
+      const handleVal = ValidationService.isValidData('handle', formData.handle);
+      if (!handleVal.valid) {
+        toast.error(handleVal.error);
+        return false;
+      }
+
       if (formData.age < 16) {
         toast.error('Deves ter pelo menos 16 anos para usar a KAZI.');
         return false;
       }
+
       // Mozambican phone number validation
-      const cleanPhone = formData.phoneNumber.replace(/\s+/g, '').replace('+258', '');
-      if (!/^(82|83|84|85|86|87)\d{7}$/.test(cleanPhone)) {
-        toast.error('Por favor, insere um número de telemóvel de Moçambique válido (ex: 84XXXXXXX).');
+      const phoneVal = ValidationService.isValidData('phone', formData.phoneNumber);
+      if (!phoneVal.valid) {
+        toast.error(phoneVal.error);
         return false;
+      }
+    }
+    if (step === 3) {
+      if (formData.bio) {
+        const bioVal = ValidationService.validateContent(formData.bio, 5);
+        if (!bioVal.valid) {
+          toast.error(`Bio: ${bioVal.error}`);
+          return false;
+        }
       }
     }
     if (step === 4) {
@@ -974,22 +1037,7 @@ const Onboarding: React.FC<{ onSkip?: () => void }> = ({ onSkip }) => {
         }
       }
       if (step === 3) {
-        // Use Gemini to improve bio subtly
-        setLoading(true);
-        try {
-          const result = await validateAndImproveProfile(formData.displayName, formData.bio, formData.phoneNumber);
-          if (result.isValid) {
-            setFormData(prev => ({ ...prev, bio: result.improvedBio || prev.bio }));
-          } else {
-            toast.error(result.reason || 'Por favor, escreve uma biografia que faça sentido.');
-            setLoading(false);
-            return;
-          }
-        } catch (err) {
-          console.error('Gemini bio improvement error:', err);
-        } finally {
-          setLoading(false);
-        }
+        // Validation already done in validateStep
       }
       setStep(step + 1);
     }
@@ -1435,15 +1483,19 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         limit(50)
       );
       const unsubscribe = onSnapshot(q, (snapshot) => {
-        const lastChecked = profile.lastCheckedNotifications?.toMillis() || 0;
-        const newMatchingJobs = snapshot.docs.filter(d => {
-          const job = d.data() as Job;
-          const isNew = job.createdAt?.toMillis() > lastChecked;
-          const matchesInterest = profile.lookingFor && (job.title.toLowerCase().includes(profile.lookingFor.toLowerCase()) || job.description.toLowerCase().includes(profile.lookingFor.toLowerCase()));
-          const matchesLocation = profile.location?.province && job.location?.province === profile.location?.province;
-          return isNew && (matchesInterest || matchesLocation);
-        }).length;
-        setUnreadNotifications(newMatchingJobs);
+        try {
+          const lastChecked = safeToMillis(profile.lastCheckedNotifications);
+          const newMatchingJobs = snapshot.docs.filter(d => {
+            const job = d.data() as Job;
+            const isNew = safeToMillis(job.createdAt) > lastChecked;
+            const matchesInterest = profile.lookingFor && (job.title.toLowerCase().includes(profile.lookingFor.toLowerCase()) || job.description.toLowerCase().includes(profile.lookingFor.toLowerCase()));
+            const matchesLocation = profile.location?.province && job.location?.province === profile.location?.province;
+            return isNew && (matchesInterest || matchesLocation);
+          }).length;
+          setUnreadNotifications(newMatchingJobs);
+        } catch (err) {
+          console.error('Error in jobs onSnapshot:', err);
+        }
       }, (error) => handleFirestoreError(error, OperationType.LIST, 'jobs'));
       return () => unsubscribe();
     }
@@ -1843,7 +1895,7 @@ const Home = () => {
                 <div>
                   <h4 className="font-black text-sm text-brand-ink">{ann.authorName}</h4>
                   <p className="text-[10px] font-bold text-brand-ink/40 uppercase tracking-widest">
-                    {ann.createdAt && typeof ann.createdAt.toDate === 'function' ? formatDistanceToNow(ann.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Agora'}
+                    {formatDistanceToNow(safeToDate(ann.createdAt), { addSuffix: true, locale: ptBR })}
                   </p>
                 </div>
               </div>
@@ -2060,7 +2112,7 @@ const ServiceList = () => {
   }, []);
 
   useEffect(() => {
-    let q = query(collection(db, 'services'), orderBy('createdAt', 'desc'));
+    let q = query(collection(db, 'services'), orderBy('createdAt', 'desc'), limit(100));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setServices(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Service)));
     }, (error) => handleFirestoreError(error, OperationType.LIST, 'services'));
@@ -2096,7 +2148,7 @@ const ServiceList = () => {
       return matchesSearch && matchesCategory && matchesProvince && matchesDistrict && matchesPrice;
     })
     .sort((a, b) => {
-      if (sortBy === 'recent') return b.createdAt?.seconds - a.createdAt?.seconds;
+      if (sortBy === 'recent') return safeToMillis(b.createdAt) - safeToMillis(a.createdAt);
       if (sortBy === 'rating') return (b.rating || 0) - (a.rating || 0);
       if (sortBy === 'price_asc') return a.price - b.price;
       if (sortBy === 'price_desc') return b.price - a.price;
@@ -2622,7 +2674,7 @@ const ServiceDetail = () => {
             >
               <Globe className="w-4 h-4 mr-1" /> Ver no Mapa
             </button>
-            <div className="flex items-center"><Clock className="w-4 h-4 mr-1" /> Postado {service.createdAt && typeof service.createdAt.toDate === 'function' ? formatDistanceToNow(service.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'recentemente'}</div>
+            <div className="flex items-center"><Clock className="w-4 h-4 mr-1" /> Postado {formatDistanceToNow(safeToDate(service.createdAt), { addSuffix: true, locale: ptBR })}</div>
           </div>
         </div>
         <div className="prose prose-stone max-w-none">
@@ -2784,7 +2836,7 @@ const ReviewList = ({ serviceId, targetId }: { serviceId?: string; targetId?: st
               </div>
             </div>
             <span className="text-[10px] text-brand-ink/30 font-bold">
-              {review.createdAt && typeof review.createdAt.toDate === 'function' ? formatDistanceToNow(review.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'recentemente'}
+              {formatDistanceToNow(safeToDate(review.createdAt), { addSuffix: true, locale: ptBR })}
             </span>
           </div>
           <p className="text-sm text-brand-ink/70 leading-relaxed">{review.comment}</p>
@@ -2936,7 +2988,7 @@ const ChatList: React.FC = () => {
                   <div className="flex justify-between items-start mb-1">
                     <h3 className="font-black text-gray-900 truncate">{chat.otherProfile?.displayName}</h3>
                     <span className="text-[11px] font-bold text-gray-400">
-                      {chat.lastMessageAt && typeof chat.lastMessageAt.toDate === 'function' ? chat.lastMessageAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                      {safeToDate(chat.lastMessageAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
                   <div className="flex justify-between items-center">
@@ -3209,6 +3261,16 @@ const ChatWindow: React.FC = () => {
       setIsSending(false);
       return;
     }
+
+    // Internal Validation Algorithm for text messages
+    if (finalType === 'text' && finalContent.trim()) {
+      const msgVal = ValidationService.validateContent(finalContent, 1);
+      if (!msgVal.valid) {
+        toast.error(`Mensagem: ${msgVal.error}`);
+        setIsSending(false);
+        return;
+      }
+    }
     
     // Check if chat is pending and user is not initiator
     if (chat.status === 'pending' && chat.initiatorId !== profile.uid) {
@@ -3423,7 +3485,7 @@ const ChatWindow: React.FC = () => {
             />
             <div className={cn(
               "absolute bottom-0 right-0 w-3 h-3 border-2 border-white rounded-full transition-colors duration-500",
-              otherProfile.updatedAt && typeof otherProfile.updatedAt.toDate === 'function' && Date.now() - otherProfile.updatedAt.toDate().getTime() < 300000 ? "bg-green-500" : "bg-gray-300"
+              otherProfile.updatedAt && Date.now() - safeToMillis(otherProfile.updatedAt) < 300000 ? "bg-green-500" : "bg-gray-300"
             )} />
           </Link>
           <div className="flex-1 min-w-0">
@@ -3431,11 +3493,11 @@ const ChatWindow: React.FC = () => {
               <h3 className="font-black text-base text-gray-900 leading-none truncate">{otherProfile.displayName}</h3>
             </Link>
             <p className="text-[10px] text-gray-400 mt-1 font-bold uppercase tracking-wider">
-              {otherProfile.updatedAt && typeof otherProfile.updatedAt.toDate === 'function' ? (
-                Date.now() - otherProfile.updatedAt.toDate().getTime() < 300000 ? (
+              {otherProfile.updatedAt ? (
+                Date.now() - safeToMillis(otherProfile.updatedAt) < 300000 ? (
                   <span className="text-green-500">Online Agora</span>
                 ) : (
-                  `Visto ${formatDistanceToNow(otherProfile.updatedAt.toDate(), { locale: ptBR, addSuffix: true })}`
+                  `Visto ${formatDistanceToNow(safeToDate(otherProfile.updatedAt), { locale: ptBR, addSuffix: true })}`
                 )
               ) : (
                 'Offline'
@@ -3578,7 +3640,7 @@ const ChatWindow: React.FC = () => {
                 isMe ? "flex-row-reverse" : "flex-row"
               )}>
                 <span className="text-[10px] font-bold text-gray-400">
-                  {msg.createdAt && typeof msg.createdAt.toDate === 'function' ? msg.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                  {safeToDate(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
                 {isMe && (
                   <div className="flex -space-x-1 ml-1">
@@ -4443,6 +4505,36 @@ const EditProfileModal = ({ onClose }: { onClose: () => void }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profile) return;
+
+    // Internal Validation Algorithm
+    const nameVal = ValidationService.isValidData('name', formData.displayName);
+    if (!nameVal.valid) {
+      toast.error(nameVal.error);
+      return;
+    }
+
+    const handleVal = ValidationService.isValidData('handle', formData.handle);
+    if (!handleVal.valid) {
+      toast.error(handleVal.error);
+      return;
+    }
+
+    if (formData.bio) {
+      const bioVal = ValidationService.validateContent(formData.bio, 5);
+      if (!bioVal.valid) {
+        toast.error(`Bio: ${bioVal.error}`);
+        return;
+      }
+    }
+
+    if (formData.phoneNumber) {
+      const phoneVal = ValidationService.isValidData('phone', formData.phoneNumber);
+      if (!phoneVal.valid) {
+        toast.error(phoneVal.error);
+        return;
+      }
+    }
+
     setLoading(true);
     try {
       if (formData.handle !== profile.handle) {
@@ -4863,18 +4955,23 @@ const AddServiceModal = ({ onClose, isStandalone = false }: { onClose: () => voi
     if (!profile) return;
     setLoading(true);
     try {
-      // AI Validation and Improvement
-      const validation = await validateAndImproveService(formData.title, formData.description, formData.category);
-      if (!validation.isValid) {
-        toast.error(validation.reason || 'A descrição do serviço não parece válida. Por favor, descreve melhor o que ofereces.');
+      // Internal Validation Algorithm
+      const titleVal = ValidationService.validateContent(formData.title, 5);
+      if (!titleVal.valid) {
+        toast.error(`Título: ${titleVal.error}`);
+        setLoading(false);
+        return;
+      }
+
+      const descVal = ValidationService.validateContent(formData.description, 10);
+      if (!descVal.valid) {
+        toast.error(`Descrição: ${descVal.error}`);
         setLoading(false);
         return;
       }
 
       await addDoc(collection(db, 'services'), {
         ...formData,
-        title: validation.improvedTitle || formData.title,
-        description: validation.improvedDescription || formData.description,
         authorId: profile.uid,
         authorName: profile.displayName,
         authorPhoto: profile.photoURL || null,
@@ -5200,7 +5297,7 @@ const Orders = () => {
 
                 <div className="flex justify-between items-center">
                   <div className="text-[10px] text-brand-ink/40 uppercase tracking-widest">
-                    {order.createdAt && typeof order.createdAt.toDate === 'function' ? formatDistanceToNow(order.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Recentemente'}
+                    {formatDistanceToNow(safeToDate(order.createdAt), { addSuffix: true, locale: ptBR })}
                   </div>
                   {order.status === 'completed' && !order.isReviewed && (
                     <button 
@@ -5301,7 +5398,7 @@ const EducationList = () => {
   const [selectedResource, setSelectedResource] = useState<Education | null>(null);
 
   useEffect(() => {
-    const q = query(collection(db, 'education'), orderBy('createdAt', 'desc'));
+    const q = query(collection(db, 'education'), orderBy('createdAt', 'desc'), limit(50));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setResources(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Education)));
     }, (error) => handleFirestoreError(error, OperationType.LIST, 'education'));
@@ -5660,7 +5757,7 @@ const AdminDashboard = () => {
 
             <div className="flex justify-between items-center text-[10px] font-bold text-gray-400 uppercase tracking-widest">
               <span>Denunciado por: {report.reporterId}</span>
-              <span>{report.createdAt && typeof report.createdAt.toDate === 'function' ? report.createdAt.toDate().toLocaleString() : ''}</span>
+              <span>{safeToDate(report.createdAt).toLocaleString()}</span>
             </div>
           </div>
         ))}
@@ -6032,7 +6129,7 @@ const Jobs: React.FC = () => {
                   </div>
                   <div className="text-right">
                     <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">
-                      {job.createdAt && typeof job.createdAt.toDate === 'function' ? formatDistanceToNow(job.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Recentemente'}
+                      {formatDistanceToNow(safeToDate(job.createdAt), { addSuffix: true, locale: ptBR })}
                     </p>
                     <Link 
                       to={`/jobs/${job.id}`}
@@ -6217,7 +6314,7 @@ const JobDetails: React.FC = () => {
                 {job.type}
               </span>
               <p className="text-sm font-bold text-gray-400 mt-2">
-                Publicado {job.createdAt && typeof job.createdAt.toDate === 'function' ? formatDistanceToNow(job.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Recentemente'}
+                Publicado {formatDistanceToNow(safeToDate(job.createdAt), { addSuffix: true, locale: ptBR })}
               </p>
             </div>
           </div>
@@ -6334,6 +6431,20 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
 
   const handleCreate = async () => {
     if (!newComm.name || !newComm.description || !profile) return;
+
+    // Internal Validation Algorithm
+    const nameVal = ValidationService.validateContent(newComm.name, 3);
+    if (!nameVal.valid) {
+      toast.error(`Nome: ${nameVal.error}`);
+      return;
+    }
+
+    const descVal = ValidationService.validateContent(newComm.description, 10);
+    if (!descVal.valid) {
+      toast.error(`Descrição: ${descVal.error}`);
+      return;
+    }
+
     setIsCreating(true);
     try {
       let photoURL = pendingPhoto || null;
@@ -6565,6 +6676,10 @@ const CommunityChat: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
+  const isAdmin = community?.creatorId === profile?.uid;
+  const isApproved = membership?.status === 'approved';
+  const isPending = membership?.status === 'pending';
+
   useEffect(() => {
     if (!communityId) return;
 
@@ -6589,9 +6704,7 @@ const CommunityChat: React.FC = () => {
     const unsubscribeMembership = onSnapshot(doc(db, 'communities', communityId, 'members', profile.uid), (d) => {
       if (d.exists()) setMembership(d.data());
       else setMembership(null);
-    }, (err) => {
-      console.error('Error fetching membership:', err);
-    });
+    }, (err) => handleFirestoreError(err, OperationType.GET, `communities/${communityId}/members/${profile.uid}`));
 
     return () => unsubscribeMembership();
   }, [communityId, profile]);
@@ -6608,9 +6721,7 @@ const CommunityChat: React.FC = () => {
     const unsubscribeMessages = onSnapshot(q, (snapshot) => {
       setMessages(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
       setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-    }, (err) => {
-      console.error('Error fetching community messages:', err);
-    });
+    }, (err) => handleFirestoreError(err, OperationType.LIST, `communities/${communityId}/messages`));
 
     return () => unsubscribeMessages();
   }, [communityId, membership]);
@@ -6621,9 +6732,7 @@ const CommunityChat: React.FC = () => {
     const q = query(collection(db, 'communities', communityId, 'members'), where('status', '==', 'pending'));
     const unsubscribeRequests = onSnapshot(q, (snapshot) => {
       setPendingRequests(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (err) => {
-      console.error('Error fetching pending requests:', err);
-    });
+    }, (err) => handleFirestoreError(err, OperationType.LIST, `communities/${communityId}/members`));
 
     return () => unsubscribeRequests();
   }, [communityId, profile, community]);
@@ -6689,6 +6798,16 @@ const CommunityChat: React.FC = () => {
     if (!content && !imageURL && !audioURL) {
       setIsSending(false);
       return;
+    }
+
+    // Internal Validation Algorithm for text messages
+    if (finalType === 'text' && content.trim()) {
+      const msgVal = ValidationService.validateContent(content, 1);
+      if (!msgVal.valid) {
+        toast.error(`Mensagem: ${msgVal.error}`);
+        setIsSending(false);
+        return;
+      }
     }
 
     setIsSending(true);
@@ -6795,10 +6914,6 @@ const CommunityChat: React.FC = () => {
   };
 
   if (authLoading || !community) return <LoadingScreen />;
-
-  const isAdmin = community.creatorId === profile?.uid;
-  const isApproved = membership?.status === 'approved';
-  const isPending = membership?.status === 'pending';
 
   if (!isApproved) {
     return (
