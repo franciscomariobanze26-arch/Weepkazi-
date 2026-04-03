@@ -25,9 +25,6 @@ import {
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
-  sendSignInLinkToEmail,
-  isSignInWithEmailLink,
-  signInWithEmailLink,
   User as FirebaseUser
 } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
@@ -868,25 +865,17 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   };
 
   const resetPassword = async (email: string) => {
-    console.log('Iniciando recuperação por Link Mágico para:', email);
+    console.log('Iniciando recuperação de palavra-passe para:', email);
     try {
-      const actionCodeSettings = {
-        // O URL para onde o utilizador será redirecionado. Deve estar na lista de domínios autorizados no Firebase.
-        url: window.location.origin,
-        handleCodeInApp: true,
-      };
-
-      await sendSignInLinkToEmail(auth, email, actionCodeSettings);
-      
-      // Guardamos o e-mail localmente para não termos de perguntar novamente quando o link for clicado
-      window.localStorage.setItem('emailForSignIn', email);
-      
-      console.log('Link de recuperação enviado com sucesso.');
-      toast.success('Link de acesso enviado! Verifique o seu e-mail (e a pasta de spam).');
+      await sendPasswordResetEmail(auth, email);
+      console.log('E-mail de recuperação enviado com sucesso.');
+      toast.success('E-mail de recuperação enviado! Verifique a sua caixa de entrada (e a pasta de spam).');
     } catch (error: any) {
-      console.error('Erro detalhado no envio do link mágico:', error);
-      let message = 'Erro ao enviar link de acesso.';
-      if (error.code === 'auth/invalid-email') {
+      console.error('Erro detalhado na recuperação de palavra-passe:', error);
+      let message = 'Erro ao enviar e-mail de recuperação.';
+      if (error.code === 'auth/user-not-found') {
+        message = 'Não existe nenhuma conta associada a este e-mail.';
+      } else if (error.code === 'auth/invalid-email') {
         message = 'O formato do e-mail é inválido.';
       } else if (error.code === 'auth/too-many-requests') {
         message = 'Demasiadas tentativas. Tente novamente mais tarde.';
@@ -895,40 +884,6 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       throw error;
     }
   };
-
-  // Efeito para detetar e processar links de login por e-mail
-  useEffect(() => {
-    const handleMagicLink = async () => {
-      if (isSignInWithEmailLink(auth, window.location.href)) {
-        let email = window.localStorage.getItem('emailForSignIn');
-        
-        // Se o e-mail não estiver no localStorage (ex: abriu noutro browser), pedimos ao utilizador
-        if (!email) {
-          email = window.prompt('Por favor, confirme o seu e-mail para completar o acesso:');
-        }
-
-        if (email) {
-          setLoading(true);
-          try {
-            const result = await signInWithEmailLink(auth, email, window.location.href);
-            window.localStorage.removeItem('emailForSignIn');
-            console.log('Login via link mágico concluído com sucesso:', result.user.uid);
-            toast.success('Bem-vindo de volta! Acesso recuperado com sucesso.');
-            
-            // Limpar o URL para remover os parâmetros do Firebase
-            window.history.replaceState({}, document.title, window.location.origin);
-          } catch (error: any) {
-            console.error('Erro ao completar login via link mágico:', error);
-            toast.error('O link de acesso expirou ou é inválido.');
-          } finally {
-            setLoading(false);
-          }
-        }
-      }
-    };
-
-    handleMagicLink();
-  }, []);
 
   return (
     <AuthContext.Provider value={{ user, profile, loading, signIn, signInWithEmail, signUpWithEmail, resetPassword, logout, refreshProfile }}>
@@ -1485,7 +1440,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           const job = d.data() as Job;
           const isNew = job.createdAt?.toMillis() > lastChecked;
           const matchesInterest = profile.lookingFor && (job.title.toLowerCase().includes(profile.lookingFor.toLowerCase()) || job.description.toLowerCase().includes(profile.lookingFor.toLowerCase()));
-          const matchesLocation = profile.location?.province && job.location?.province === profile.location.province;
+          const matchesLocation = profile.location?.province && job.location?.province === profile.location?.province;
           return isNew && (matchesInterest || matchesLocation);
         }).length;
         setUnreadNotifications(newMatchingJobs);
@@ -1888,7 +1843,7 @@ const Home = () => {
                 <div>
                   <h4 className="font-black text-sm text-brand-ink">{ann.authorName}</h4>
                   <p className="text-[10px] font-bold text-brand-ink/40 uppercase tracking-widest">
-                    {ann.createdAt ? formatDistanceToNow(ann.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Agora'}
+                    {ann.createdAt && typeof ann.createdAt.toDate === 'function' ? formatDistanceToNow(ann.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Agora'}
                   </p>
                 </div>
               </div>
@@ -2423,9 +2378,9 @@ const LoginPrompt = ({ message = "Precisa entrar para continuar" }: { message?: 
                     <Send className="w-6 h-6 text-green-600" />
                   </div>
                   <div className="space-y-2">
-                    <h4 className="font-black text-green-900">Link Enviado!</h4>
+                    <h4 className="font-black text-green-900">E-mail Enviado!</h4>
                     <p className="text-xs text-green-700 font-bold leading-relaxed">
-                      Enviámos um link de acesso direto para <span className="underline">{email}</span>. Clique no link no seu e-mail para entrar automaticamente.
+                      Enviámos um link de recuperação para <span className="underline">{email}</span>. Verifique a sua caixa de entrada e a pasta de spam.
                     </p>
                   </div>
                   <button 
@@ -2475,7 +2430,7 @@ const LoginPrompt = ({ message = "Precisa entrar para continuar" }: { message?: 
                 disabled={loading}
                 className="w-full py-5 bg-primary text-white rounded-2xl font-black text-lg hover:bg-primary/90 transition-all shadow-xl shadow-primary/20 hover:-translate-y-1 active:translate-y-0 disabled:opacity-50"
               >
-                {loading ? 'A processar...' : (showResetForm ? 'Enviar Link de Acesso' : (isSignUp ? 'Criar Conta' : 'Entrar'))}
+                {loading ? 'A processar...' : (showResetForm ? 'Recuperar Palavra-passe' : (isSignUp ? 'Criar Conta' : 'Entrar'))}
               </button>
             )}
 
@@ -2667,7 +2622,7 @@ const ServiceDetail = () => {
             >
               <Globe className="w-4 h-4 mr-1" /> Ver no Mapa
             </button>
-            <div className="flex items-center"><Clock className="w-4 h-4 mr-1" /> Postado {service.createdAt ? formatDistanceToNow(service.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'recentemente'}</div>
+            <div className="flex items-center"><Clock className="w-4 h-4 mr-1" /> Postado {service.createdAt && typeof service.createdAt.toDate === 'function' ? formatDistanceToNow(service.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'recentemente'}</div>
           </div>
         </div>
         <div className="prose prose-stone max-w-none">
@@ -2829,7 +2784,7 @@ const ReviewList = ({ serviceId, targetId }: { serviceId?: string; targetId?: st
               </div>
             </div>
             <span className="text-[10px] text-brand-ink/30 font-bold">
-              {review.createdAt ? formatDistanceToNow(review.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'recentemente'}
+              {review.createdAt && typeof review.createdAt.toDate === 'function' ? formatDistanceToNow(review.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'recentemente'}
             </span>
           </div>
           <p className="text-sm text-brand-ink/70 leading-relaxed">{review.comment}</p>
@@ -2981,7 +2936,7 @@ const ChatList: React.FC = () => {
                   <div className="flex justify-between items-start mb-1">
                     <h3 className="font-black text-gray-900 truncate">{chat.otherProfile?.displayName}</h3>
                     <span className="text-[11px] font-bold text-gray-400">
-                      {chat.lastMessageAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      {chat.lastMessageAt && typeof chat.lastMessageAt.toDate === 'function' ? chat.lastMessageAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                     </span>
                   </div>
                   <div className="flex justify-between items-center">
@@ -3468,7 +3423,7 @@ const ChatWindow: React.FC = () => {
             />
             <div className={cn(
               "absolute bottom-0 right-0 w-3 h-3 border-2 border-white rounded-full transition-colors duration-500",
-              otherProfile.updatedAt && Date.now() - otherProfile.updatedAt.toDate().getTime() < 300000 ? "bg-green-500" : "bg-gray-300"
+              otherProfile.updatedAt && typeof otherProfile.updatedAt.toDate === 'function' && Date.now() - otherProfile.updatedAt.toDate().getTime() < 300000 ? "bg-green-500" : "bg-gray-300"
             )} />
           </Link>
           <div className="flex-1 min-w-0">
@@ -3476,7 +3431,7 @@ const ChatWindow: React.FC = () => {
               <h3 className="font-black text-base text-gray-900 leading-none truncate">{otherProfile.displayName}</h3>
             </Link>
             <p className="text-[10px] text-gray-400 mt-1 font-bold uppercase tracking-wider">
-              {otherProfile.updatedAt ? (
+              {otherProfile.updatedAt && typeof otherProfile.updatedAt.toDate === 'function' ? (
                 Date.now() - otherProfile.updatedAt.toDate().getTime() < 300000 ? (
                   <span className="text-green-500">Online Agora</span>
                 ) : (
@@ -3623,7 +3578,7 @@ const ChatWindow: React.FC = () => {
                 isMe ? "flex-row-reverse" : "flex-row"
               )}>
                 <span className="text-[10px] font-bold text-gray-400">
-                  {msg.createdAt?.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {msg.createdAt && typeof msg.createdAt.toDate === 'function' ? msg.createdAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
                 </span>
                 {isMe && (
                   <div className="flex -space-x-1 ml-1">
@@ -4781,6 +4736,11 @@ const CourseModal: React.FC<{ course: string; onClose: () => void }> = ({ course
   useEffect(() => {
     const fetchCourse = async () => {
       try {
+        // AI features are disabled as per user request
+        setContent('# 🚀 ' + course + '\n\n## 💡 Conteúdo em Breve\n\nEstamos a preparar este guia prático para ti. Volta em breve para aprenderes mais sobre como brilhar em Moçambique!\n\n## ✨ O que podes esperar\n- Passos práticos e acionáveis\n- Dicas de ouro para o teu sucesso\n- Erros comuns a evitar\n\n🏁 **KAZI: O teu sucesso começa aqui!**');
+        setLoading(false);
+        return;
+        /*
         const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
         if (!apiKey || apiKey === 'undefined') {
           setContent('# ⚠️ Indisponível\n\nO serviço de IA não está configurado. Por favor, adicione uma chave de API válida para aceder aos cursos.');
@@ -4814,6 +4774,7 @@ const CourseModal: React.FC<{ course: string; onClose: () => void }> = ({ course
           Usa Markdown rico. Foca na realidade de Moçambique e em ajudar jovens a brilhar.`,
         });
         setContent(response.text || 'Não foi possível carregar o conteúdo.');
+        */
       } catch (err) {
         console.error('Error fetching course:', err);
         setContent('Erro ao carregar o curso. Tenta novamente mais tarde.');
@@ -5239,7 +5200,7 @@ const Orders = () => {
 
                 <div className="flex justify-between items-center">
                   <div className="text-[10px] text-brand-ink/40 uppercase tracking-widest">
-                    {order.createdAt ? formatDistanceToNow(order.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Recentemente'}
+                    {order.createdAt && typeof order.createdAt.toDate === 'function' ? formatDistanceToNow(order.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Recentemente'}
                   </div>
                   {order.status === 'completed' && !order.isReviewed && (
                     <button 
@@ -5699,7 +5660,7 @@ const AdminDashboard = () => {
 
             <div className="flex justify-between items-center text-[10px] font-bold text-gray-400 uppercase tracking-widest">
               <span>Denunciado por: {report.reporterId}</span>
-              <span>{report.createdAt?.toDate().toLocaleString()}</span>
+              <span>{report.createdAt && typeof report.createdAt.toDate === 'function' ? report.createdAt.toDate().toLocaleString() : ''}</span>
             </div>
           </div>
         ))}
@@ -6056,7 +6017,7 @@ const Jobs: React.FC = () => {
                       <p className="text-gray-600 font-bold mb-2">{job.company}</p>
                       <div className="flex flex-wrap gap-3 text-sm font-medium text-gray-500">
                         <span className="flex items-center gap-1 bg-gray-50 px-3 py-1 rounded-full">
-                          <MapPin className="w-3.5 h-3.5" /> {job.location.province}, {job.location.district}
+                          <MapPin className="w-3.5 h-3.5" /> {job.location?.province || 'N/A'}, {job.location?.district || 'N/A'}
                         </span>
                         <span className="flex items-center gap-1 bg-gray-50 px-3 py-1 rounded-full uppercase tracking-wider text-[10px] font-bold">
                           {job.type}
@@ -6071,7 +6032,7 @@ const Jobs: React.FC = () => {
                   </div>
                   <div className="text-right">
                     <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">
-                      {job.createdAt ? formatDistanceToNow(job.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Recentemente'}
+                      {job.createdAt && typeof job.createdAt.toDate === 'function' ? formatDistanceToNow(job.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Recentemente'}
                     </p>
                     <Link 
                       to={`/jobs/${job.id}`}
@@ -6256,7 +6217,7 @@ const JobDetails: React.FC = () => {
                 {job.type}
               </span>
               <p className="text-sm font-bold text-gray-400 mt-2">
-                Publicado {job.createdAt ? formatDistanceToNow(job.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Recentemente'}
+                Publicado {job.createdAt && typeof job.createdAt.toDate === 'function' ? formatDistanceToNow(job.createdAt.toDate(), { addSuffix: true, locale: ptBR }) : 'Recentemente'}
               </p>
             </div>
           </div>
@@ -6264,11 +6225,11 @@ const JobDetails: React.FC = () => {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
             <div className="bg-gray-50 p-4 rounded-2xl">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Província</p>
-              <p className="font-bold text-gray-900">{job.location.province}</p>
+              <p className="font-bold text-gray-900">{job.location?.province || 'N/A'}</p>
             </div>
             <div className="bg-gray-50 p-4 rounded-2xl">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Distrito</p>
-              <p className="font-bold text-gray-900">{job.location.district}</p>
+              <p className="font-bold text-gray-900">{job.location?.district || 'N/A'}</p>
             </div>
             <div className="bg-gray-50 p-4 rounded-2xl">
               <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-1">Salário</p>
@@ -7195,7 +7156,7 @@ const Notifications: React.FC = () => {
       const matchingJobs = snapshot.docs.filter(d => {
         const job = d.data() as Job;
         const matchesInterest = profile.lookingFor && (job.title.toLowerCase().includes(profile.lookingFor.toLowerCase()) || job.description.toLowerCase().includes(profile.lookingFor.toLowerCase()));
-        const matchesLocation = profile.location?.province && job.location?.province === profile.location.province;
+        const matchesLocation = profile.location?.province && job.location?.province === profile.location?.province;
         return matchesInterest || matchesLocation;
       }).map(d => ({ id: d.id, ...d.data() } as Job));
       
@@ -7253,7 +7214,7 @@ const Notifications: React.FC = () => {
                 <div className="flex flex-wrap gap-2 mb-4">
                   <span className="flex items-center gap-1 text-xs font-bold text-brand-ink/60 bg-brand-bg px-3 py-1.5 rounded-full">
                     <MapPin className="w-3 h-3" />
-                    {job.location.district}, {job.location.province}
+                    {job.location?.district || 'N/A'}, {job.location?.province || 'N/A'}
                   </span>
                   <span className="flex items-center gap-1 text-xs font-bold text-brand-ink/60 bg-brand-bg px-3 py-1.5 rounded-full">
                     <Briefcase className="w-3 h-3" />
