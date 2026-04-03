@@ -110,3 +110,89 @@ body {
 .custom-scrollbar::-webkit-scrollbar-thumb {
   @apply bg-brand-gray rounded-full hover:bg-primary/30 transition-colors;
 }
+
+/* === Native Android Enhancements === */
+
+/* Safe area support for notch/cutout devices */
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Native-feeling touch feedback */
+.native-press {
+  transition: transform 0.1s ease, opacity 0.1s ease;
+}
+
+.native-press:active {
+  transform: scale(0.97);
+  opacity: 0.85;
+}
+
+/* Minimum touch target size for Android (48dp) */
+.touch-target {
+  min-height: 48px;
+  min-width: 48px;
+}
+
+/* Smooth native-like scrolling */
+.native-scroll {
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+}
+
+/* Hide scrollbar on mobile for cleaner look */
+@media (max-width: 768px) {
+  .native-scroll::-webkit-scrollbar {
+    display: none;
+  }
+  .native-scroll {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* Android ripple-like effect */
+.ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, rgba(0, 102, 255, 0.15) 10%, transparent 10%);
+  transform: scale(10);
+  opacity: 0;
+  transition: transform 0.4s, opacity 0.6s;
+}
+
+.ripple:active::after {
+  transform: scale(0);
+  opacity: 1;
+  transition: 0s;
+}
+
+/* Capacitor native platform adjustments */
+html.plt-capacitor body {
+  overscroll-behavior-y: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html.plt-capacitor input,
+html.plt-capacitor textarea,
+html.plt-capacitor [contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Bottom navigation safe area */
+.bottom-nav-safe {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
+}
