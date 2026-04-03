@@ -114,6 +114,9 @@ import {
 } from 'lucide-react';
 import { Browser } from '@capacitor/browser';
 import { App as CapApp } from '@capacitor/app';
+import { StatusBar, Style as StatusBarStyle } from '@capacitor/status-bar';
+import { Keyboard } from '@capacitor/keyboard';
+import { GoogleSignIn } from '@capawesome/capacitor-google-sign-in';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -623,11 +626,14 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       }
     }, 10000); // 10 seconds timeout
 
-    // Handle redirect result for Capacitor
+    // Configure native platform features
     if (Capacitor.isNativePlatform()) {
-      import('@codetrix-studio/capacitor-google-auth').then(({ GoogleAuth }) => {
-        GoogleAuth.initialize();
-      });
+      // Set up status bar for professional look
+      StatusBar.setBackgroundColor({ color: '#0066FF' }).catch(() => {});
+      StatusBar.setStyle({ style: StatusBarStyle.Light }).catch(() => {});
+      
+      // Configure keyboard behavior
+      Keyboard.setAccessoryBarVisible({ isVisible: true }).catch(() => {});
     }
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -756,14 +762,19 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     // 1. Tentar Login Nativo (Dentro do App)
     if (Capacitor.isNativePlatform()) {
       try {
-        const { GoogleAuth } = await import('@codetrix-studio/capacitor-google-auth');
-        console.log('Iniciando Login Nativo...');
-        const nativeUser = await GoogleAuth.signIn();
-        const credential = GoogleAuthProvider.credential(nativeUser.authentication.idToken);
+        console.log('Iniciando Login Nativo com Google Sign-In...');
+        const result = await GoogleSignIn.signIn();
+        console.log('Google Sign-In nativo bem-sucedido:', result);
+        const credential = GoogleAuthProvider.credential(result.idToken);
         await signInWithCredential(auth, credential);
         return;
-      } catch (err) {
+      } catch (err: any) {
         console.error('Login nativo falhou, tentando via web:', err);
+        // If native sign-in fails, fall through to web-based sign-in
+        if (err?.message?.includes('canceled') || err?.code === 'canceled') {
+          toast.info('Login cancelado.');
+          return;
+        }
       }
     }
 
@@ -1709,8 +1720,8 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         {children}
       </main>
 
-      {/* Mobile Bottom Nav */}
-      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-gray-100 px-2 py-3 z-50 flex justify-around items-center shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
+      {/* Mobile Bottom Nav - Native Android Style */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-xl border-t border-gray-100 px-2 pt-2 z-50 flex justify-around items-center shadow-[0_-10px_40px_rgba(0,0,0,0.05)] bottom-nav-safe">
         <Link to="/" className={cn("flex flex-col items-center gap-0.5 min-w-[60px]", location.pathname === "/" ? "text-primary" : "text-gray-400")}>
           <HomeIcon className="w-5 h-5" />
           <span className="text-[9px] font-bold">Explorar</span>
