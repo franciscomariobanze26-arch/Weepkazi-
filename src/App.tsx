@@ -28,6 +28,8 @@ import {
   User as FirebaseUser
 } from 'firebase/auth';
 import { Capacitor } from '@capacitor/core';
+import { formatDistanceToNow } from 'date-fns';
+import { ptBR } from 'date-fns/locale';
 import { 
   collection, 
   doc, 
@@ -99,6 +101,7 @@ import {
   Trash2,
   Lock,
   UserPlus,
+  UserMinus,
   Users,
   ClipboardList,
   Bell,
@@ -109,14 +112,14 @@ import {
   FileText,
   Image as ImageIcon,
   Pause,
+  Gift,
+  TrendingUp,
 } from 'lucide-react';
 import { Browser } from '@capacitor/browser';
 import { App as CapApp } from '@capacitor/app';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { formatDistanceToNow } from 'date-fns';
-import { ptBR } from 'date-fns/locale';
 
 import { GoogleGenAI } from "@google/genai";
 import Markdown from 'react-markdown';
@@ -126,6 +129,7 @@ import { generateLogo, getSmartRecommendations, validateAndImproveProfile, valid
 import { ImageUpload } from './components/ImageUpload';
 
 // --- Constants ---
+const ADMIN_EMAIL = 'franciscomariobanze26@gmail.com';
 const MOZAMBIQUE_LOCATIONS: Record<string, string[]> = {
   "Cabo Delgado": ["Pemba", "Ancuabe", "Balama", "Chiúre", "Ibo", "Macomia", "Mecúfi", "Meluco", "Metuge", "Mocímboa da Praia", "Montepuez", "Mueda", "Muidumbe", "Namuno", "Nangade", "Palma", "Quissanga"],
   "Gaza": ["Xai-Xai", "Bilene", "Chibuto", "Chicualacuala", "Chigubo", "Chókwe", "Guijá", "Mabalane", "Manjacaze", "Massangena", "Massingir"],
@@ -173,6 +177,35 @@ const safeToMillis = (ts: any): number => {
 const safeToDate = (ts: any): Date => {
   const millis = safeToMillis(ts);
   return millis > 0 ? new Date(millis) : new Date();
+};
+
+const calculateDistance = (lat1?: number, lon1?: number, lat2?: number, lon2?: number) => {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return null;
+  const R = 6371; // Radius of the earth in km
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+const createNotification = async (userId: string, data: Partial<Notification>) => {
+  try {
+    await addDoc(collection(db, 'notifications'), {
+      userId,
+      title: data.title || 'Nova Notificação',
+      message: data.message || '',
+      type: data.type || 'system',
+      link: data.link || '',
+      read: false,
+      createdAt: serverTimestamp()
+    });
+  } catch (err) {
+    console.error('Error creating notification:', err);
+  }
 };
 
 const CreateJob: React.FC<{ onClose: () => void }> = ({ onClose }) => {
@@ -407,6 +440,12 @@ interface UserProfile {
   reviewCount?: number;
   createdAt: any;
   updatedAt?: any;
+  isBanned?: boolean;
+  isSuspended?: boolean;
+  suspensionReason?: string;
+  suspensionUntil?: any;
+  favorites?: { services: string[]; providers: string[] };
+  viewHistory?: { id: string; type: 'service' | 'provider'; timestamp: any }[];
 }
 
 interface Announcement {
@@ -511,12 +550,23 @@ interface Message {
   deletedForAll?: boolean;
 }
 
+interface Notification {
+  id: string;
+  userId: string;
+  title: string;
+  message: string;
+  type: 'message' | 'interest' | 'review' | 'promotion' | 'system';
+  link?: string;
+  read: boolean;
+  createdAt: any;
+}
+
 interface Report {
   id: string;
   reportedId: string;
   reportedType: 'user' | 'service' | 'message' | 'announcement';
   reporterId: string;
-  type: 'spam' | 'inappropriate' | 'harassment' | 'fraud' | 'fake_review' | 'technical' | 'other';
+  type: 'spam' | 'inappropriate' | 'harassment' | 'fraud' | 'fake_review' | 'fake_profile' | 'technical' | 'other';
   description?: string;
   status: 'pending' | 'in_review' | 'resolved' | 'rejected';
   priority: 'low' | 'medium' | 'high';
@@ -534,6 +584,9 @@ interface AuthContextType {
   resetPassword: (email: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshProfile: (uid: string) => Promise<void>;
+  showLoginPrompt: boolean;
+  setShowLoginPrompt: (show: boolean) => void;
+  toggleFavorite: (id: string, type: 'services' | 'providers') => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -561,14 +614,27 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
       emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: (auth.currentUser as any)?.tenantId,
+      providerInfo: auth.currentUser?.providerData.map(provider => ({
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        email: provider.email,
+        photoUrl: provider.photoURL
+      })) || []
     },
     operationType,
     path
   };
   const fullErrorMsg = `Firestore Error (${operationType}): ${errInfo.error}`;
   console.error(fullErrorMsg, JSON.stringify(errInfo));
-  toast.error(fullErrorMsg);
-  throw new Error(fullErrorMsg + ' ' + JSON.stringify(errInfo));
+  
+  // Don't toast if it's just a connection issue, we have the LoadingScreen for that
+  if (!errInfo.error.includes('unavailable') && !errInfo.error.includes('offline')) {
+    toast.error(fullErrorMsg);
+  }
+  
+  throw new Error(JSON.stringify(errInfo));
 }
 
 // --- Components ---
@@ -619,15 +685,27 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
+  const [showLoginPrompt, setShowLoginPrompt] = useState(false);
+
   const refreshProfile = async (uid: string) => {
     try {
       const docRef = doc(db, 'users', uid);
       const privateDocRef = doc(db, 'users_private', uid);
-      // Use getDocFromServer to ensure we get the latest data after an update
-      const [docSnap, privateSnap] = await Promise.all([
-        getDocFromServer(docRef),
-        getDocFromServer(privateDocRef).catch(() => null)
-      ]);
+      
+      // Try server first for latest data
+      let docSnap, privateSnap;
+      try {
+        [docSnap, privateSnap] = await Promise.all([
+          getDocFromServer(docRef),
+          getDocFromServer(privateDocRef).catch(() => null)
+        ]);
+      } catch (serverError) {
+        console.warn('Server fetch failed, falling back to cache:', serverError);
+        [docSnap, privateSnap] = await Promise.all([
+          getDoc(docRef),
+          getDoc(privateDocRef).catch(() => null)
+        ]);
+      }
 
       if (docSnap.exists()) {
         let data = docSnap.data() as UserProfile;
@@ -639,22 +717,22 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       }
     } catch (error) {
       console.error('Error refreshing profile:', error);
-      // Fallback to normal getDoc if server fetch fails
-      const [docSnap, privateSnap] = await Promise.all([
-        getDoc(doc(db, 'users', uid)),
-        getDoc(doc(db, 'users_private', uid)).catch(() => null)
-      ]);
-      if (docSnap.exists()) {
-        let data = docSnap.data() as UserProfile;
-        if (privateSnap && privateSnap.exists()) {
-          data = { ...data, ...privateSnap.data() };
-        }
-        setProfile(data);
-      }
     }
   };
 
   useEffect(() => {
+    // Test connection on mount
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, '_connection_test_', 'ping'));
+      } catch (error: any) {
+        if (error.code === 'unavailable' || error.message?.includes('offline')) {
+          console.error("CRITICAL: Firestore connection failed. Check configuration.");
+        }
+      }
+    };
+    testConnection();
+
     // Safety timeout to prevent stuck loading state
     const timeoutId = setTimeout(() => {
       if (loading) {
@@ -714,7 +792,7 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
               displayName: displayName,
               handle: handle,
               photoURL: firebaseUser.photoURL || null,
-              role: 'client',
+              role: firebaseUser.email === ADMIN_EMAIL ? 'admin' : 'client',
               isComplete: false,
               createdAt: serverTimestamp(),
             };
@@ -754,18 +832,6 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
         });
       }
     });
-
-    // Test connection
-    const testConnection = async () => {
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
-        }
-      }
-    };
-    testConnection();
 
     return () => {
       unsubscribe();
@@ -928,8 +994,47 @@ const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => 
     }
   };
 
+  const toggleFavorite = async (id: string, type: 'services' | 'providers') => {
+    if (!user || !profile) {
+      setShowLoginPrompt(true);
+      return;
+    }
+    
+    const currentFavorites = profile.favorites || { services: [], providers: [] };
+    const list = currentFavorites[type] || [];
+    const isFav = list.includes(id);
+    
+    const newList = isFav 
+      ? list.filter(item => item !== id)
+      : [...list, id];
+      
+    const updatedFavorites = { ...currentFavorites, [type]: newList };
+    
+    try {
+      await updateDoc(doc(db, 'users', user.uid), { favorites: updatedFavorites });
+      setProfile({ ...profile, favorites: updatedFavorites });
+      toast.success(isFav ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
+    } catch (err) {
+      console.error('Error toggling favorite:', err);
+      toast.error('Erro ao atualizar favoritos');
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signIn, signInWithEmail, signUpWithEmail, resetPassword, logout, refreshProfile }}>
+    <AuthContext.Provider value={{ 
+      user, 
+      profile, 
+      loading, 
+      signIn, 
+      signInWithEmail, 
+      signUpWithEmail, 
+      resetPassword, 
+      logout, 
+      refreshProfile,
+      showLoginPrompt,
+      setShowLoginPrompt,
+      toggleFavorite
+    }}>
       {children}
     </AuthContext.Provider>
   );
@@ -939,7 +1044,7 @@ const Onboarding: React.FC<{ onSkip?: () => void }> = ({ onSkip }) => {
   const { profile, refreshProfile } = useAuth();
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
-  const [showTerms, setShowTerms] = useState(false);
+  const [showTerms, setShowTerms] = useState<null | 'terms' | 'privacy' | 'rules'>(null);
   const [formData, setFormData] = useState({
     displayName: profile?.displayName || '',
     handle: '',
@@ -955,6 +1060,23 @@ const Onboarding: React.FC<{ onSkip?: () => void }> = ({ onSkip }) => {
     },
     acceptedTerms: false
   });
+
+  // Automatic Handle Generation
+  useEffect(() => {
+    if (formData.displayName && !formData.handle) {
+      const generatedHandle = formData.displayName
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9]/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_|_$/g, "");
+      
+      if (generatedHandle) {
+        setFormData(prev => ({ ...prev, handle: generatedHandle }));
+      }
+    }
+  }, [formData.displayName]);
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1289,66 +1411,16 @@ const Onboarding: React.FC<{ onSkip?: () => void }> = ({ onSkip }) => {
                   className="w-5 h-5 rounded border-brand-gray text-primary focus:ring-primary"
                 />
                 <label htmlFor="terms" className="text-sm font-bold text-brand-ink cursor-pointer">
-                  Eu aceito os <button onClick={() => setShowTerms(true)} className="text-primary underline">Termos e Condições</button>
+                  Eu aceito os <button onClick={() => setShowTerms('terms')} className="text-primary underline">Termos e Condições</button> e a <button onClick={() => setShowTerms('privacy')} className="text-primary underline">Política de Privacidade</button>
                 </label>
               </div>
             </div>
 
-            <AnimatePresence>
-              {showTerms && (
-                <div className="fixed inset-0 z-[200] bg-brand-ink/60 backdrop-blur-sm flex items-center justify-center p-4">
-                  <motion.div 
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: 20 }}
-                    className="bg-white w-full max-w-xl rounded-[32px] p-8 max-h-[80vh] overflow-y-auto relative"
-                  >
-                    <button 
-                      onClick={() => setShowTerms(false)}
-                      className="absolute top-6 right-6 p-2 hover:bg-brand-gray rounded-xl transition-all"
-                    >
-                      <X className="w-6 h-6" />
-                    </button>
-                    <h3 className="text-2xl font-black mb-6">Termos e Condições – Kazi</h3>
-                    <div className="space-y-6 text-brand-ink/70 leading-relaxed font-medium">
-                      <section>
-                        <h4 className="font-bold text-brand-ink mb-2">1. Aceitação</h4>
-                        <p>Ao usar o Kazi, você confirma que leu e aceita estes Termos e Condições. Você não poderá usar o app sem concordar.</p>
-                      </section>
-                      <section>
-                        <h4 className="font-bold text-brand-ink mb-2">2. Responsabilidade do utilizador</h4>
-                        <p>O Kazi fornece ferramentas para criar perfis, anunciar serviços, aprender e contactar clientes. Todas as decisões que tomar usando o app são de sua responsabilidade. O app e os desenvolvedores não se responsabilizam por perdas, danos ou problemas que possam surgir do uso do Kazi.</p>
-                      </section>
-                      <section>
-                        <h4 className="font-bold text-brand-ink mb-2">3. Uso correto</h4>
-                        <p>Você concorda em usar o Kazi apenas para atividades legais e éticas. Não é permitido usar o app para enganar ou prejudicar outros utilizadores.</p>
-                      </section>
-                      <section>
-                        <h4 className="font-bold text-brand-ink mb-2">4. Privacidade</h4>
-                        <p>Alguns dados podem ser armazenados para funcionamento do app. O Kazi não compartilhará suas informações com terceiros sem autorização.</p>
-                      </section>
-                      <section>
-                        <h4 className="font-bold text-brand-ink mb-2">5. Direitos do app</h4>
-                        <p>O conteúdo, design e funcionalidades do Kazi são propriedade do desenvolvedor. Você não pode copiar, modificar ou distribuir o app sem permissão.</p>
-                      </section>
-                      <section>
-                        <h4 className="font-bold text-brand-ink mb-2">6. Alterações nos termos</h4>
-                        <p>O Kazi pode atualizar estes Termos e Condições a qualquer momento. As alterações serão notificadas e o uso contínuo do app significa aceitação das novas regras.</p>
-                      </section>
-                    </div>
-                    <button 
-                      onClick={() => {
-                        setFormData({...formData, acceptedTerms: true});
-                        setShowTerms(false);
-                      }}
-                      className="w-full mt-8 py-4 bg-primary text-white rounded-2xl font-bold hover:bg-primary/90 transition-all"
-                    >
-                      Aceitar e Fechar
-                    </button>
-                  </motion.div>
-                </div>
-              )}
-            </AnimatePresence>
+            <TermsModal 
+              show={!!showTerms} 
+              onClose={() => setShowTerms(null)} 
+              type={showTerms || 'terms'} 
+            />
           </div>
         )}
 
@@ -1451,8 +1523,114 @@ const LoadingScreen = () => (
   </div>
 );
 
+// --- Login Prompt Component ---
+const LoginPrompt: React.FC<{ show: boolean; onClose: () => void; message?: string }> = ({ show, onClose, message = "Precisa entrar para continuar" }) => {
+  const { signIn, signInWithEmail } = useAuth();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isEmailMode, setIsEmailMode] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  if (!show) return null;
+
+  const handleEmailSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await signInWithEmail(email, password);
+      onClose();
+    } catch (err) {
+      // Error handled in signInWithEmail
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[300] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-white w-full max-w-sm rounded-[40px] p-8 shadow-2xl relative overflow-hidden"
+      >
+        <button 
+          onClick={onClose}
+          className="absolute top-6 right-6 p-2 hover:bg-gray-100 rounded-full transition-colors z-10"
+        >
+          <X className="w-5 h-5 text-gray-400" />
+        </button>
+
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 bg-primary/10 rounded-3xl flex items-center justify-center mx-auto mb-4">
+            <Lock className="w-8 h-8 text-primary" />
+          </div>
+          <h3 className="text-2xl font-black text-gray-900">Entrar na KAZI</h3>
+          <p className="text-gray-500 font-medium mt-2">{message}</p>
+        </div>
+
+        <div className="space-y-4">
+          {!isEmailMode ? (
+            <>
+              <button 
+                onClick={() => {
+                  signIn();
+                  onClose();
+                }}
+                className="w-full py-4 bg-white border-2 border-gray-100 rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-gray-50 transition-all shadow-sm"
+              >
+                <img src="https://www.google.com/favicon.ico" className="w-5 h-5" alt="Google" />
+                <span>Continuar com Google</span>
+              </button>
+              <button 
+                onClick={() => setIsEmailMode(true)}
+                className="w-full py-4 bg-gray-900 text-white rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-gray-800 transition-all shadow-xl shadow-gray-900/20"
+              >
+                <Mail className="w-5 h-5" />
+                <span>Entrar com E-mail</span>
+              </button>
+            </>
+          ) : (
+            <form onSubmit={handleEmailSignIn} className="space-y-4">
+              <input 
+                type="email"
+                placeholder="E-mail"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                className="w-full bg-gray-100 border-none rounded-2xl px-6 py-4 text-sm font-medium focus:ring-2 focus:ring-primary/20"
+              />
+              <input 
+                type="password"
+                placeholder="Palavra-passe"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                className="w-full bg-gray-100 border-none rounded-2xl px-6 py-4 text-sm font-medium focus:ring-2 focus:ring-primary/20"
+              />
+              <button 
+                type="submit"
+                disabled={loading}
+                className="w-full py-4 bg-primary text-white rounded-2xl font-bold flex items-center justify-center gap-3 hover:bg-primary/90 transition-all shadow-xl shadow-primary/20 disabled:opacity-50"
+              >
+                {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Entrar'}
+              </button>
+              <button 
+                type="button"
+                onClick={() => setIsEmailMode(false)}
+                className="w-full py-2 text-sm font-bold text-gray-400 hover:text-gray-600 transition-all"
+              >
+                Voltar às opções
+              </button>
+            </form>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { profile, logout, signIn, loading } = useAuth();
+  const { profile, logout, signIn, loading, showLoginPrompt, setShowLoginPrompt } = useAuth();
   const { toggleTheme } = useTheme();
   const location = useLocation();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -1561,6 +1739,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             </motion.div>
           </div>
         )}
+        <LoginPrompt show={showLoginPrompt} onClose={() => setShowLoginPrompt(false)} />
       </AnimatePresence>
 
       <nav className="sticky top-0 z-50 bg-white/95 backdrop-blur-xl border-b border-brand-gray/10">
@@ -1760,6 +1939,7 @@ const Home = () => {
   const [activeProfiles, setActiveProfiles] = useState<UserProfile[]>([]);
   const [recentAnnouncements, setRecentAnnouncements] = useState<Announcement[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<string | null>(null);
+  const [announcementToDelete, setAnnouncementToDelete] = useState<string | null>(null);
 
   useEffect(() => {
     const q = query(collection(db, 'services'), orderBy('createdAt', 'desc'), limit(12));
@@ -1785,9 +1965,10 @@ const Home = () => {
     return () => unsubscribe();
   }, []);
 
-  const localServices = profile?.location 
-    ? recentServices.filter(s => s.location?.province === profile.location?.province)
-    : recentServices;
+  const rankedServices = [...recentServices].sort((a, b) => (b.rating || 0) - (a.rating || 0));
+
+  const favoriteServices = recentServices.filter(s => profile?.favorites?.services?.includes(s.id));
+  const localServices = recentServices.filter(s => s.location?.province === profile?.location?.province);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1798,6 +1979,16 @@ const Home = () => {
       } else {
         navigate(`/services?q=${encodeURIComponent(searchQuery)}`);
       }
+    }
+  };
+
+  const deleteAnnouncement = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'announcements', id));
+      toast.success('Anúncio apagado com sucesso.');
+    } catch (err) {
+      console.error('Error deleting announcement:', err);
+      toast.error('Erro ao apagar o anúncio.');
     }
   };
 
@@ -1845,6 +2036,42 @@ const Home = () => {
           Vendas
         </Link>
       </section>
+
+      {/* Featured / Top Rated Section */}
+      <section>
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-xl font-black tracking-tight text-brand-ink">
+            Melhores Prestadores
+          </h2>
+          <Link to="/services" className="text-primary text-sm font-bold">Ver Ranking</Link>
+        </div>
+        <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar">
+          {rankedServices.slice(0, 5).map(service => (
+            <div key={service.id} className="min-w-[280px] max-w-[280px]">
+              <ServiceCard service={service} />
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Favorites Section */}
+      {favoriteServices.length > 0 && (
+        <section>
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-xl font-black tracking-tight text-brand-ink">
+              Os Teus Favoritos
+            </h2>
+            <Star className="w-5 h-5 text-primary fill-current" />
+          </div>
+          <div className="flex gap-4 overflow-x-auto pb-4 no-scrollbar">
+            {favoriteServices.map(service => (
+              <div key={service.id} className="min-w-[280px] max-w-[280px]">
+                <ServiceCard service={service} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Opportunities Section */}
       <section>
@@ -1903,7 +2130,16 @@ const Home = () => {
               {ann.photoURL && (
                 <img src={ann.photoURL} className="mt-4 rounded-2xl w-full h-48 object-cover" referrerPolicy="no-referrer" />
               )}
-              <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-2">
+                {profile?.uid === ann.authorId && (
+                  <button 
+                    onClick={() => setAnnouncementToDelete(ann.id)}
+                    className="p-2 bg-red-50 text-red-600 rounded-full hover:bg-red-100 transition-colors"
+                    title="Apagar anúncio"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
                 <ReportButton reportedId={ann.id} reportedType="announcement" />
               </div>
             </div>
@@ -2015,13 +2251,40 @@ const Home = () => {
           Aprenda. Trabalhe. Cresça com <span className="text-primary">Kazi</span>
         </p>
       </div>
+
+      <ConfirmModal
+        show={!!announcementToDelete}
+        title="Apagar Anúncio"
+        message="Tens a certeza que queres apagar este anúncio? Esta ação não pode ser desfeita."
+        onConfirm={() => {
+          if (announcementToDelete) {
+            deleteAnnouncement(announcementToDelete);
+            setAnnouncementToDelete(null);
+          }
+        }}
+        onCancel={() => setAnnouncementToDelete(null)}
+      />
     </div>
   );
 };
 
 const ServiceCard = ({ service }: { service: Service; key?: string }) => {
+  const { profile, toggleFavorite } = useAuth();
+  const navigate = useNavigate();
+
+  const isFavorite = profile?.favorites?.services?.includes(service.id);
+  const distance = calculateDistance(
+    profile?.location?.lat, 
+    profile?.location?.lng, 
+    service.location?.lat, 
+    service.location?.lng
+  );
+
   return (
-    <Link to={`/service/${service.id}`} className="group bg-white rounded-[32px] overflow-hidden border border-brand-gray hover:shadow-2xl transition-all flex flex-col hover:-translate-y-1">
+    <div 
+      onClick={() => navigate(`/service/${service.id}`)}
+      className="group bg-white rounded-[32px] overflow-hidden border border-brand-gray hover:shadow-2xl transition-all flex flex-col hover:-translate-y-1 cursor-pointer relative"
+    >
       <div className="h-56 bg-brand-gray relative overflow-hidden">
         <img 
           src={service.photoURL || `https://picsum.photos/seed/${service.id}/400/300`} 
@@ -2031,12 +2294,46 @@ const ServiceCard = ({ service }: { service: Service; key?: string }) => {
         <div className="absolute top-4 left-4 bg-white/90 backdrop-blur px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest text-primary shadow-sm">
           {service.category}
         </div>
+        
+        <button 
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleFavorite(service.id, 'services');
+          }}
+          className={cn(
+            "absolute top-4 right-4 p-2.5 rounded-2xl backdrop-blur transition-all shadow-lg",
+            isFavorite ? "bg-primary text-white" : "bg-white/90 text-gray-400 hover:text-primary"
+          )}
+        >
+          <Star className={cn("w-4 h-4", isFavorite && "fill-current")} />
+        </button>
       </div>
       <div className="p-8 flex-1 flex flex-col">
         <div className="flex justify-between items-start mb-3">
           <h3 className="font-black text-xl leading-tight text-brand-ink group-hover:text-primary transition-colors">{service.title}</h3>
           <div className="flex items-center gap-2">
             <p className="text-secondary font-black text-lg">MT {service.price}</p>
+            {profile?.uid === service.authorId && (
+              <button 
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (confirm('Tens a certeza que queres apagar este serviço?')) {
+                    deleteDoc(doc(db, 'services', service.id))
+                      .then(() => toast.success('Serviço apagado com sucesso.'))
+                      .catch((err) => {
+                        console.error('Error deleting service:', err);
+                        toast.error('Erro ao apagar serviço.');
+                      });
+                  }
+                }}
+                className="p-1.5 bg-red-50 text-red-600 rounded-lg hover:bg-red-100 transition-colors"
+                title="Apagar serviço"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
             <ReportButton reportedId={service.id} reportedType="service" className="p-1" />
           </div>
         </div>
@@ -2044,6 +2341,9 @@ const ServiceCard = ({ service }: { service: Service; key?: string }) => {
         <div className="flex items-center justify-between text-[10px] text-brand-ink/40 font-bold uppercase tracking-widest mb-4">
           <div className="flex items-center">
             <MapPin className="w-3 h-3 mr-1" /> {service.location?.district}, {service.location?.province}
+            {distance !== null && (
+              <span className="ml-2 text-primary">({distance.toFixed(1)} km)</span>
+            )}
           </div>
           <button 
             onClick={(e) => {
@@ -2072,8 +2372,7 @@ const ServiceCard = ({ service }: { service: Service; key?: string }) => {
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              // Navigate to service detail to complete order
-              window.location.href = `/service/${service.id}`;
+              navigate(`/service/${service.id}`);
             }}
             className="px-4 py-2 bg-brand-ink text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-brand-ink/90 transition-all shadow-lg shadow-brand-ink/10"
           >
@@ -2081,7 +2380,7 @@ const ServiceCard = ({ service }: { service: Service; key?: string }) => {
           </button>
         </div>
       </div>
-    </Link>
+    </div>
   );
 };
 
@@ -2343,7 +2642,7 @@ const ServiceList = () => {
   );
 };
 
-const LoginPrompt = ({ message = "Precisa entrar para continuar" }: { message?: string }) => {
+const LoginPage = ({ message = "Precisa entrar para continuar" }: { message?: string }) => {
   const { profile, signIn, signInWithEmail, signUpWithEmail, resetPassword } = useAuth();
   const navigate = useNavigate();
   const [showEmailForm, setShowEmailForm] = useState(false);
@@ -2551,12 +2850,31 @@ const ServiceDetail = () => {
   const [service, setService] = useState<Service | null>(null);
   const [author, setAuthor] = useState<UserProfile | null>(null);
   const [orderMessage, setOrderMessage] = useState('');
+  const [orderImage, setOrderImage] = useState<string | null>(null);
   const [isOrdering, setIsOrdering] = useState(false);
-  const { profile, signIn } = useAuth();
+  const { profile, setShowLoginPrompt } = useAuth();
   const navigate = useNavigate();
+  const hasUpdatedHistory = useRef(false);
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const compressedBase64 = await compressImage(file, 1200, 1200, 0.7);
+      setOrderImage(compressedBase64);
+    } catch (err) {
+      console.error('Error processing image:', err);
+      toast.error('Erro ao processar a imagem.');
+    } finally {
+      e.target.value = '';
+    }
+  };
 
   const handleStartChat = async () => {
-    if (!profile) return signIn();
+    if (!profile) {
+      setShowLoginPrompt(true);
+      return;
+    }
     if (!service) return;
     if (profile.uid === service.authorId) return;
 
@@ -2608,14 +2926,39 @@ const ServiceDetail = () => {
         } catch (error) {
           handleFirestoreError(error, OperationType.GET, `users/${data.authorId}`);
         }
+
+        // Add to view history (only once per mount/id change)
+        if (profile && !hasUpdatedHistory.current) {
+          hasUpdatedHistory.current = true;
+          const historyItem = { id: docSnap.id, type: 'service' as const, timestamp: serverTimestamp() };
+          const currentHistory = profile.viewHistory || [];
+          const filteredHistory = currentHistory.filter(h => h.id !== docSnap.id).slice(0, 19);
+          await updateDoc(doc(db, 'users', profile.uid), {
+            viewHistory: [historyItem, ...filteredHistory]
+          });
+        }
       }
     }, (error) => handleFirestoreError(error, OperationType.GET, `services/${id}`));
     return () => unsubscribe();
-  }, [id]);
+  }, [id, profile?.uid]);
 
   const handleOrder = async () => {
-    if (!profile) return signIn();
+    if (!profile) {
+      setShowLoginPrompt(true);
+      return;
+    }
     if (!service) return;
+
+    if (!orderMessage.trim()) {
+      toast.error('Por favor, descreve o que precisas.');
+      return;
+    }
+
+    const msgVal = ValidationService.validateContent(orderMessage, 10);
+    if (!msgVal.valid) {
+      toast.error(`Mensagem: ${msgVal.error}`);
+      return;
+    }
 
     setIsOrdering(true);
     try {
@@ -2627,10 +2970,12 @@ const ServiceDetail = () => {
         providerId: service.authorId,
         providerName: service.authorName,
         status: 'pending',
-        message: orderMessage,
+        message: orderMessage.trim(),
+        imageURL: orderImage || null,
         createdAt: serverTimestamp(),
       };
       await addDoc(collection(db, 'orders'), orderData);
+      toast.success('Pedido enviado com sucesso!');
       navigate('/orders');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'orders');
@@ -2708,7 +3053,7 @@ const ServiceDetail = () => {
                   </p>
                 </div>
                 <button 
-                  onClick={signIn}
+                  onClick={() => setShowLoginPrompt(true)}
                   className="w-full py-4 bg-primary text-white rounded-2xl font-bold hover:bg-primary/90 transition-all shadow-lg shadow-primary/20"
                 >
                   Entrar para pedir/contatar
@@ -2722,6 +3067,34 @@ const ServiceDetail = () => {
                   onChange={(e) => setOrderMessage(e.target.value)}
                   className="w-full p-4 bg-brand-bg rounded-2xl border-none focus:ring-2 focus:ring-primary/20 outline-none h-32 resize-none text-sm"
                 />
+                
+                <div className="flex flex-col gap-3">
+                  {orderImage && (
+                    <div className="relative w-full h-32 rounded-2xl overflow-hidden group">
+                      <img src={orderImage} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      <button 
+                        onClick={() => setOrderImage(null)}
+                        className="absolute top-2 right-2 p-1.5 bg-black/50 text-white rounded-full hover:bg-black/70 transition-colors"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+                  
+                  <label className="flex items-center justify-center gap-2 w-full py-3 border-2 border-dashed border-brand-gray rounded-2xl cursor-pointer hover:border-primary/30 hover:bg-primary/5 transition-all text-brand-ink/40 hover:text-primary">
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={handleImageUpload} 
+                      className="hidden" 
+                    />
+                    <ImageIcon className="w-5 h-5" />
+                    <span className="text-xs font-bold uppercase tracking-widest">
+                      {orderImage ? 'Alterar Imagem' : 'Anexar Imagem/Documento'}
+                    </span>
+                  </label>
+                </div>
+
                 <div className="grid grid-cols-2 gap-4">
                   <button 
                     onClick={handleOrder}
@@ -2901,7 +3274,7 @@ const ChatList: React.FC = () => {
   }, [profile]);
 
   if (loading) return <LoadingScreen />;
-  if (!profile) return <LoginPrompt message="Inicie sessão para ver as suas mensagens" />;
+  if (!profile) return <LoginPage message="Inicie sessão para ver as suas mensagens" />;
 
   if (chatLoading && activeTab !== 'communities') return <LoadingScreen />;
 
@@ -2987,9 +3360,30 @@ const ChatList: React.FC = () => {
                 <div className="flex-1 min-w-0">
                   <div className="flex justify-between items-start mb-1">
                     <h3 className="font-black text-gray-900 truncate">{chat.otherProfile?.displayName}</h3>
-                    <span className="text-[11px] font-bold text-gray-400">
-                      {safeToDate(chat.lastMessageAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] font-bold text-gray-400">
+                        {safeToDate(chat.lastMessageAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <button
+                        onClick={async (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (confirm('Queres apagar esta conversa?')) {
+                            try {
+                              await deleteDoc(doc(db, 'chats', chat.id));
+                              toast.success('Conversa apagada.');
+                            } catch (err) {
+                              console.error('Error deleting chat:', err);
+                              toast.error('Erro ao apagar conversa.');
+                            }
+                          }
+                        }}
+                        className="p-1.5 text-red-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                        title="Apagar conversa"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <div className="flex justify-between items-center">
                     <p className={cn(
@@ -3172,8 +3566,54 @@ const ChatWindow: React.FC = () => {
   const [isSending, setIsSending] = useState(false);
   const [activeMessageMenu, setActiveMessageMenu] = useState<string | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const [messageToDelete, setMessageToDelete] = useState<{ id: string, forEveryone: boolean } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
+
+  // Offline Persistence: Load from localStorage on mount
+  useEffect(() => {
+    if (!chatId) return;
+    const cached = localStorage.getItem(`chat_messages_${chatId}`);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        setMessages(parsed);
+      } catch (e) {
+        console.error('Error parsing cached messages', e);
+      }
+    }
+  }, [chatId]);
+
+  // Offline Persistence: Save to localStorage when messages update
+  useEffect(() => {
+    if (!chatId || messages.length === 0) return;
+    // We only save the last 100 messages to avoid localStorage limits
+    localStorage.setItem(`chat_messages_${chatId}`, JSON.stringify(messages.slice(-100)));
+  }, [chatId, messages]);
+
+  // 24h Deletion: Cleanup old messages from server
+  useEffect(() => {
+    if (!chatId || !profile) return;
+    
+    const cleanupOldMessages = async () => {
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const q = query(
+        collection(db, 'chats', chatId, 'messages'),
+        where('createdAt', '<', twentyFourHoursAgo)
+      );
+      
+      try {
+        const snapshot = await getDocs(q);
+        const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
+        await Promise.all(deletePromises);
+      } catch (err) {
+        console.error('Error cleaning up old messages:', err);
+      }
+    };
+
+    // Run cleanup once on mount
+    cleanupOldMessages();
+  }, [chatId, profile]);
 
   useEffect(() => {
     if (!chatId || !profile) return;
@@ -3211,7 +3651,27 @@ const ChatWindow: React.FC = () => {
     );
 
     const unsubscribeMessages = onSnapshot(q, (snapshot) => {
-      setMessages(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Message)));
+      const newMessages = snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Message));
+      
+      setMessages(prev => {
+        // Merge new messages with existing ones, avoiding duplicates
+        const merged = [...prev];
+        newMessages.forEach(msg => {
+          const index = merged.findIndex(m => m.id === msg.id);
+          if (index === -1) {
+            merged.push(msg);
+          } else {
+            merged[index] = msg;
+          }
+        });
+        // Sort by creation time
+        return merged.sort((a, b) => {
+          const dateA = safeToDate(a.createdAt).getTime();
+          const dateB = safeToDate(b.createdAt).getTime();
+          return dateA - dateB;
+        });
+      });
+
       setTimeout(() => {
         scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
@@ -3463,7 +3923,7 @@ const ChatWindow: React.FC = () => {
   };
 
   if (loading) return <LoadingScreen />;
-  if (!profile) return <LoginPrompt message="Inicie sessão para conversar" />;
+  if (!profile) return <LoginPage message="Inicie sessão para conversar" />;
   if (!chat || !otherProfile) return <LoadingScreen />;
 
   const isPending = chat.status === 'pending';
@@ -3586,19 +4046,33 @@ const ChatWindow: React.FC = () => {
                     <p className="text-sm leading-relaxed font-medium py-0.5">{msg.content}</p>
                   )}
 
-                  {/* Message Menu Button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setActiveMessageMenu(activeMessageMenu === msg.id ? null : msg.id);
-                    }}
-                    className={cn(
-                      "absolute top-1/2 -translate-y-1/2 p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-all hover:bg-black/5",
-                      isMe ? "-left-10 text-gray-400" : "-right-10 text-gray-400"
+                  {/* Message Actions */}
+                  <div className={cn(
+                    "absolute top-1/2 -translate-y-1/2 flex items-center gap-1 transition-all",
+                    isMe ? "-left-12" : "-right-12"
+                  )}>
+                    {isMe && !msg.deletedForAll && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setMessageToDelete({ id: msg.id, forEveryone: true });
+                        }}
+                        className="p-1.5 rounded-full text-red-400 hover:bg-red-50 transition-colors"
+                        title="Apagar para todos"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     )}
-                  >
-                    <MoreVertical className="w-4 h-4" />
-                  </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveMessageMenu(activeMessageMenu === msg.id ? null : msg.id);
+                      }}
+                      className="p-1.5 rounded-full text-gray-400 hover:bg-black/5 transition-all"
+                    >
+                      <MoreVertical className="w-4 h-4" />
+                    </button>
+                  </div>
 
                   {/* Message Menu Dropdown */}
                   {activeMessageMenu === msg.id && (
@@ -3611,7 +4085,7 @@ const ChatWindow: React.FC = () => {
                     >
                       <button
                         onClick={() => {
-                          deleteMessage(msg.id, false);
+                          setMessageToDelete({ id: msg.id, forEveryone: false });
                           setActiveMessageMenu(null);
                         }}
                         className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
@@ -3619,18 +4093,6 @@ const ChatWindow: React.FC = () => {
                         <Trash2 className="w-4 h-4" />
                         Apagar para mim
                       </button>
-                      {isMe && !msg.deletedForAll && (
-                        <button
-                          onClick={() => {
-                            deleteMessage(msg.id, true);
-                            setActiveMessageMenu(null);
-                          }}
-                          className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                          Apagar para todos
-                        </button>
-                      )}
                     </div>
                   )}
                 </div>
@@ -3797,13 +4259,25 @@ const ChatWindow: React.FC = () => {
           </div>
         )}
       </div>
+      <ConfirmModal
+        show={!!messageToDelete}
+        title="Apagar Mensagem"
+        message={messageToDelete?.forEveryone ? "Tens a certeza que queres apagar esta mensagem para todos?" : "Tens a certeza que queres apagar esta mensagem para ti?"}
+        onConfirm={() => {
+          if (messageToDelete) {
+            deleteMessage(messageToDelete.id, messageToDelete.forEveryone);
+            setMessageToDelete(null);
+          }
+        }}
+        onCancel={() => setMessageToDelete(null)}
+      />
     </div>
   );
 };
 
 const Profile = () => {
   const { id: paramId } = useParams();
-  const { profile: currentUserProfile, refreshProfile, signIn } = useAuth();
+  const { profile: currentUserProfile, refreshProfile, setShowLoginPrompt } = useAuth();
   const navigate = useNavigate();
   const id = paramId || currentUserProfile?.uid;
   const isOwnProfile = currentUserProfile?.uid === id;
@@ -3821,7 +4295,10 @@ const Profile = () => {
   const [isChatLoading, setIsChatLoading] = useState(false);
 
   const toggleFollow = async () => {
-    if (!currentUserProfile || !profile || isFollowLoading) return signIn();
+    if (!currentUserProfile || !profile || isFollowLoading) {
+      setShowLoginPrompt(true);
+      return;
+    }
     if (isOwnProfile) return;
 
     setIsFollowLoading(true);
@@ -3911,7 +4388,10 @@ const Profile = () => {
   }, [currentUserProfile, id, isOwnProfile]);
 
   const handleStartChat = async () => {
-    if (!currentUserProfile) return signIn();
+    if (!currentUserProfile) {
+      setShowLoginPrompt(true);
+      return;
+    }
     if (currentUserProfile.uid === id) return;
 
     const chatId = [currentUserProfile.uid, id].sort().join('_');
@@ -3986,7 +4466,10 @@ const Profile = () => {
   }, [id]);
 
   const handleBlockUser = async (targetId: string, isBlocked: boolean) => {
-    if (!currentUserProfile) return signIn();
+    if (!currentUserProfile) {
+      setShowLoginPrompt(true);
+      return;
+    }
     try {
       const newBlockedUsers = isBlocked
         ? (currentUserProfile.blockedUsers || []).filter(uid => uid !== targetId)
@@ -4003,7 +4486,7 @@ const Profile = () => {
     }
   };
 
-  if (!profile && !paramId) return <LoginPrompt />;
+  if (!profile && !paramId) return <LoginPage />;
 
   if (!profile) return <div className="min-h-screen flex items-center justify-center">
     <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin" />
@@ -4245,7 +4728,7 @@ const Profile = () => {
                         Login necessário para ver<br />informações de contacto
                       </p>
                       <button 
-                        onClick={signIn}
+                        onClick={() => setShowLoginPrompt(true)}
                         className="w-full py-3 bg-white border border-brand-gray rounded-xl flex items-center justify-center gap-2 hover:bg-brand-bg transition-all shadow-sm"
                       >
                         <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-4 h-4" />
@@ -4350,6 +4833,27 @@ const Profile = () => {
             {profile.workExamples.map((img, idx) => (
               <div key={idx} className="aspect-square rounded-3xl overflow-hidden border border-brand-gray group relative">
                 <img src={img} className="w-full h-full object-cover transition-transform group-hover:scale-110" />
+                {isOwnProfile && (
+                  <button 
+                    onClick={async () => {
+                      if (confirm('Queres remover este exemplo de trabalho?')) {
+                        try {
+                          const newExamples = profile.workExamples?.filter((_, i) => i !== idx);
+                          await updateDoc(doc(db, 'users', profile.uid), {
+                            workExamples: newExamples
+                          });
+                          toast.success('Exemplo removido.');
+                        } catch (err) {
+                          console.error('Error removing work example:', err);
+                          toast.error('Erro ao remover exemplo.');
+                        }
+                      }
+                    }}
+                    className="absolute top-2 right-2 p-2 bg-red-50 text-red-600 rounded-xl transition-all hover:bg-red-100 shadow-lg"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -5253,7 +5757,7 @@ const Orders = () => {
   }, [profile]);
 
   if (loading) return <LoadingScreen />;
-  if (!profile) return <LoginPrompt message="Inicie sessão para ver os seus pedidos" />;
+  if (!profile) return <LoginPage message="Inicie sessão para ver os seus pedidos" />;
 
   const updateStatus = async (orderId: string, status: string) => {
     try {
@@ -5500,12 +6004,13 @@ const ReportModal = ({
   const [isSuccess, setIsSuccess] = useState(false);
 
   const categories = [
+    { id: 'fake_profile', label: 'Perfil Falso / Conta Falsa' },
+    { id: 'fraud', label: 'Golpe / Fraude / Tentativa de burlar' },
+    { id: 'inappropriate', label: 'Conteúdo Impróprio (Nudez, Violência, Ódio)' },
+    { id: 'harassment', label: 'Assédio / Bullying / Desrespeito' },
     { id: 'spam', label: 'Spam / Publicidade não autorizada' },
-    { id: 'inappropriate', label: 'Conteúdo impróprio (nudez, violência, ódio)' },
-    { id: 'harassment', label: 'Assédio ou bullying' },
-    { id: 'fraud', label: 'Fraude ou tentativa de golpe' },
     { id: 'fake_review', label: 'Avaliação falsa ou enganosa' },
-    { id: 'technical', label: 'Problema técnico / conteúdo incorreto' },
+    { id: 'technical', label: 'Problema técnico / Conteúdo incorreto' },
     { id: 'other', label: 'Outro' },
   ];
 
@@ -5669,9 +6174,130 @@ const ReportButton = ({ reportedId, reportedType, className }: { reportedId: str
   );
 };
 
+const Notifications = () => {
+  const { user } = useAuth();
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!user) return;
+    const q = query(
+      collection(db, 'notifications'),
+      where('userId', '==', user.uid),
+      orderBy('createdAt', 'desc'),
+      limit(50)
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      setNotifications(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification)));
+      setLoading(false);
+    }, (error) => handleFirestoreError(error, OperationType.LIST, 'notifications'));
+    return () => unsubscribe();
+  }, [user]);
+
+  const markAsRead = async (id: string) => {
+    try {
+      await updateDoc(doc(db, 'notifications', id), { read: true });
+    } catch (err) {
+      console.error('Error marking notification as read:', err);
+    }
+  };
+
+  const markAllAsRead = async () => {
+    try {
+      const unread = notifications.filter(n => !n.read);
+      await Promise.all(unread.map(n => updateDoc(doc(db, 'notifications', n.id), { read: true })));
+      toast.success('Todas as notificações marcadas como lidas');
+    } catch (err) {
+      console.error('Error marking all as read:', err);
+    }
+  };
+
+  if (loading) return <LoadingScreen />;
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-8">
+      <div className="flex justify-between items-center">
+        <h1 className="text-3xl font-black tracking-tighter">Notificações</h1>
+        {notifications.some(n => !n.read) && (
+          <button 
+            onClick={markAllAsRead}
+            className="text-primary text-sm font-bold hover:underline"
+          >
+            Marcar todas como lidas
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-4">
+        {notifications.length > 0 ? (
+          notifications.map((n) => (
+            <div 
+              key={n.id}
+              onClick={() => markAsRead(n.id)}
+              className={cn(
+                "p-6 rounded-[32px] border transition-all cursor-pointer",
+                n.read ? "bg-white border-brand-gray opacity-60" : "bg-white border-primary shadow-lg shadow-primary/5"
+              )}
+            >
+              <div className="flex gap-4">
+                <div className={cn(
+                  "w-12 h-12 rounded-2xl flex items-center justify-center shrink-0",
+                  n.type === 'message' ? "bg-blue-100 text-blue-600" :
+                  n.type === 'interest' ? "bg-green-100 text-green-600" :
+                  n.type === 'review' ? "bg-yellow-100 text-yellow-600" :
+                  "bg-gray-100 text-gray-600"
+                )}>
+                  {n.type === 'message' ? <MessageCircle className="w-6 h-6" /> :
+                   n.type === 'interest' ? <Sparkles className="w-6 h-6" /> :
+                   n.type === 'review' ? <Star className="w-6 h-6" /> :
+                   <Bell className="w-6 h-6" />}
+                </div>
+                <div className="flex-1">
+                  <div className="flex justify-between items-start mb-1">
+                    <h3 className="font-bold text-brand-ink">{n.title}</h3>
+                    <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                      {n.createdAt ? formatDistanceToNow(safeToDate(n.createdAt), { addSuffix: true, locale: ptBR }) : ''}
+                    </span>
+                  </div>
+                  <p className="text-sm text-brand-ink/60 font-medium leading-relaxed">{n.message}</p>
+                  {n.link && (
+                    <Link 
+                      to={n.link}
+                      className="inline-block mt-4 text-xs font-black text-primary uppercase tracking-widest hover:underline"
+                    >
+                      Ver Detalhes
+                    </Link>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="text-center py-20 bg-white rounded-[32px] border border-dashed border-brand-gray">
+            <Bell className="w-12 h-12 text-brand-gray mx-auto mb-4" />
+            <p className="text-brand-ink/40 font-bold">Não tens notificações de momento.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const AdminDashboard = () => {
   const { profile } = useAuth();
   const [reports, setReports] = useState<Report[]>([]);
+  const [stats, setStats] = useState({
+    users: 0,
+    services: 0,
+    reports: 0,
+    revenue: 0
+  });
+  const [analytics, setAnalytics] = useState({
+    dailyActiveUsers: 0,
+    newUsersToday: 0,
+    newServicesToday: 0,
+    resolvedReports: 0
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -5682,6 +6308,46 @@ const AdminDashboard = () => {
       setReports(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Report)));
       setLoading(false);
     }, (error) => handleFirestoreError(error, OperationType.LIST, 'reports'));
+
+    // Fetch basic stats
+    const fetchStats = async () => {
+      try {
+        const [usersSnap, servicesSnap, reportsSnap] = await Promise.all([
+          getDocs(collection(db, 'users')),
+          getDocs(collection(db, 'services')),
+          getDocs(collection(db, 'reports'))
+        ]);
+        
+        const currentStats = {
+          users: usersSnap.size,
+          services: servicesSnap.size,
+          reports: reportsSnap.size,
+          revenue: 0 // Placeholder
+        };
+        setStats(currentStats);
+
+        // Detailed analytics
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayTimestamp = Timestamp.fromDate(today);
+
+        const [newUsersSnap, newServicesSnap, resolvedReportsSnap] = await Promise.all([
+          getDocs(query(collection(db, 'users'), where('createdAt', '>=', todayTimestamp))),
+          getDocs(query(collection(db, 'services'), where('createdAt', '>=', todayTimestamp))),
+          getDocs(query(collection(db, 'reports'), where('status', '==', 'resolved')))
+        ]);
+
+        setAnalytics({
+          dailyActiveUsers: currentStats.users, // Simplified
+          newUsersToday: newUsersSnap.size,
+          newServicesToday: newServicesSnap.size,
+          resolvedReports: resolvedReportsSnap.size
+        });
+      } catch (err) {
+        console.error('Error fetching stats:', err);
+      }
+    };
+    fetchStats();
     
     return () => unsubscribe();
   }, [profile]);
@@ -5689,8 +6355,30 @@ const AdminDashboard = () => {
   const handleUpdateStatus = async (reportId: string, status: Report['status']) => {
     try {
       await updateDoc(doc(db, 'reports', reportId), { status });
+      toast.success('Estado da denúncia atualizado');
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `reports/${reportId}`);
+    }
+  };
+
+  const handleModerateUser = async (userId: string, action: 'ban' | 'suspend' | 'unban') => {
+    try {
+      const userRef = doc(db, 'users', userId);
+      if (action === 'ban') {
+        await updateDoc(userRef, { isBanned: true });
+        toast.success('Utilizador banido com sucesso');
+      } else if (action === 'suspend') {
+        await updateDoc(userRef, { 
+          isSuspended: true, 
+          suspensionUntil: Timestamp.fromMillis(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+        });
+        toast.success('Utilizador suspenso por 7 dias');
+      } else if (action === 'unban') {
+        await updateDoc(userRef, { isBanned: false, isSuspended: false });
+        toast.success('Restrições removidas');
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`);
     }
   };
 
@@ -5703,13 +6391,68 @@ const AdminDashboard = () => {
   return (
     <div className="space-y-8">
       <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-black tracking-tighter">Gestão de Denúncias</h1>
+        <h1 className="text-3xl font-black tracking-tighter">Painel Administrativo</h1>
         <div className="bg-primary/10 text-primary px-4 py-2 rounded-full text-xs font-black uppercase tracking-widest">
-          {reports.length} Denúncias
+          {reports.length} Denúncias Pendentes
+        </div>
+      </div>
+
+      {/* Analytics Dashboard */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        {[
+          { label: 'Utilizadores', value: stats.users, icon: Users, color: 'bg-blue-500' },
+          { label: 'Serviços Ativos', value: stats.services, icon: Briefcase, color: 'bg-green-500' },
+          { label: 'Denúncias', value: stats.reports, icon: AlertTriangle, color: 'bg-red-500' },
+          { label: 'Receita (MT)', value: stats.revenue, icon: Sparkles, color: 'bg-yellow-500' }
+        ].map((stat, i) => (
+          <div key={i} className="bg-white p-6 rounded-[32px] border border-brand-gray shadow-sm">
+            <div className={cn("w-10 h-10 rounded-2xl flex items-center justify-center text-white mb-4", stat.color)}>
+              <stat.icon className="w-5 h-5" />
+            </div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-brand-ink/30 mb-1">{stat.label}</p>
+            <p className="text-2xl font-black text-brand-ink">{stat.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Detailed Analytics */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-white p-8 rounded-[32px] border border-brand-gray shadow-sm">
+          <h3 className="text-lg font-black mb-6 flex items-center gap-2">
+            <TrendingUp className="w-5 h-5 text-primary" /> Crescimento Hoje
+          </h3>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center p-4 bg-gray-50 rounded-2xl">
+              <span className="font-bold text-gray-500">Novos Utilizadores</span>
+              <span className="font-black text-primary">+{analytics.newUsersToday}</span>
+            </div>
+            <div className="flex justify-between items-center p-4 bg-gray-50 rounded-2xl">
+              <span className="font-bold text-gray-500">Novos Serviços</span>
+              <span className="font-black text-secondary">+{analytics.newServicesToday}</span>
+            </div>
+          </div>
+        </div>
+        <div className="bg-white p-8 rounded-[32px] border border-brand-gray shadow-sm">
+          <h3 className="text-lg font-black mb-6 flex items-center gap-2">
+            <CheckCircle className="w-5 h-5 text-green-500" /> Eficiência de Moderação
+          </h3>
+          <div className="space-y-4">
+            <div className="flex justify-between items-center p-4 bg-gray-50 rounded-2xl">
+              <span className="font-bold text-gray-500">Denúncias Resolvidas</span>
+              <span className="font-black text-green-600">{analytics.resolvedReports}</span>
+            </div>
+            <div className="flex justify-between items-center p-4 bg-gray-50 rounded-2xl">
+              <span className="font-bold text-gray-500">Taxa de Resolução</span>
+              <span className="font-black text-brand-ink">
+                {stats.reports > 0 ? ((analytics.resolvedReports / stats.reports) * 100).toFixed(1) : 0}%
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
       <div className="grid gap-4">
+        <h2 className="text-xl font-black tracking-tight mt-8 mb-4">Denúncias Recentes</h2>
         {reports.map((report) => (
           <div key={report.id} className="bg-white p-6 rounded-[32px] border border-brand-gray shadow-sm hover:shadow-md transition-shadow">
             <div className="flex justify-between items-start mb-4">
@@ -5728,24 +6471,42 @@ const AdminDashboard = () => {
                 <h3 className="font-bold text-gray-900">ID Denunciado: {report.reportedId}</h3>
               </div>
               <div className="flex gap-2">
-                <button 
-                  onClick={() => handleUpdateStatus(report.id, 'in_review')}
-                  className="px-4 py-2 bg-blue-50 text-blue-600 rounded-xl text-xs font-bold hover:bg-blue-100 transition-colors"
-                >
-                  Em Revisão
-                </button>
-                <button 
-                  onClick={() => handleUpdateStatus(report.id, 'resolved')}
-                  className="px-4 py-2 bg-green-50 text-green-600 rounded-xl text-xs font-bold hover:bg-green-100 transition-colors"
-                >
-                  Resolver
-                </button>
-                <button 
-                  onClick={() => handleUpdateStatus(report.id, 'rejected')}
-                  className="px-4 py-2 bg-gray-50 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-100 transition-colors"
-                >
-                  Rejeitar
-                </button>
+                <div className="flex flex-col gap-2">
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => handleUpdateStatus(report.id, 'in_review')}
+                      className="px-4 py-2 bg-blue-50 text-blue-600 rounded-xl text-xs font-bold hover:bg-blue-100 transition-colors"
+                    >
+                      Em Revisão
+                    </button>
+                    <button 
+                      onClick={() => handleUpdateStatus(report.id, 'resolved')}
+                      className="px-4 py-2 bg-green-50 text-green-600 rounded-xl text-xs font-bold hover:bg-green-100 transition-colors"
+                    >
+                      Resolver
+                    </button>
+                    <button 
+                      onClick={() => handleUpdateStatus(report.id, 'rejected')}
+                      className="px-4 py-2 bg-gray-50 text-gray-400 rounded-xl text-xs font-bold hover:bg-gray-100 transition-colors"
+                    >
+                      Rejeitar
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => handleModerateUser(report.reportedId, 'ban')}
+                      className="flex-1 px-4 py-2 bg-red-600 text-white rounded-xl text-xs font-bold hover:bg-red-700 transition-colors"
+                    >
+                      Banir Utilizador
+                    </button>
+                    <button 
+                      onClick={() => handleModerateUser(report.reportedId, 'suspend')}
+                      className="flex-1 px-4 py-2 bg-orange-500 text-white rounded-xl text-xs font-bold hover:bg-orange-600 transition-colors"
+                    >
+                      Suspender
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
             
@@ -5774,80 +6535,194 @@ const AdminDashboard = () => {
 
 const Terms = () => (
   <div className="max-w-3xl mx-auto py-20 px-4">
-    <h1 className="text-4xl font-bold mb-8">Termos de Serviço</h1>
-    <div className="prose prose-brand max-w-none text-brand-ink/70 leading-relaxed space-y-6">
-      <p>Bem-vindo à KAZI. Ao utilizar a nossa plataforma, concordas com os seguintes termos:</p>
-      <h2 className="text-xl font-bold text-brand-ink mt-8">1. Uso da Plataforma</h2>
-      <p>A KAZI é um mercado que conecta prestadores de serviços a clientes em Moçambique. Não somos responsáveis pela execução dos serviços, mas facilitamos a conexão.</p>
-      <h2 className="text-xl font-bold text-brand-ink mt-8">2. Responsabilidades do Utilizador</h2>
-      <p>Deves fornecer informações verdadeiras e precisas no teu perfil. Fotos reais e descrições honestas são obrigatórias para manter a integridade da comunidade.</p>
-      <h2 className="text-xl font-bold text-brand-ink mt-8">3. Pagamentos</h2>
-      <p>Os pagamentos são negociados diretamente entre o cliente e o prestador. Recomendamos o uso de métodos seguros e a confirmação do serviço antes do pagamento total.</p>
+    <h1 className="text-4xl font-black tracking-tighter mb-8 text-brand-ink">Termos de Serviço</h1>
+    <div className="prose prose-brand max-w-none text-brand-ink/70 leading-relaxed space-y-8 font-medium">
+      <section>
+        <p className="text-lg">Bem-vindo à KAZI, uma plataforma digital que conecta prestadores de serviços a clientes em Moçambique. Estes Termos constituem um acordo legal vinculativo.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">1. Aceitação dos Termos</h2>
+        <p>Ao utilizar a KAZI, o utilizador concorda com todos os termos descritos, confirma capacidade legal para celebrar contratos e compromete-se a cumprir as leis aplicáveis.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">2. Natureza da Plataforma</h2>
+        <p>A KAZI atua exclusivamente como intermediária digital e facilitadora de contacto. A KAZI não é empregadora, agência de recrutamento ou prestadora direta de serviços.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">3. Elegibilidade</h2>
+        <p>Para utilizar a plataforma, o utilizador deve ter pelo menos 18 anos, possuir capacidade civil e não estar impedido por lei.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">4. Registo e Conta</h2>
+        <p>O utilizador deve fornecer dados verdadeiros, não utilizar identidade falsa e é responsável pela segurança da sua senha.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">5. Perfil e Identidade</h2>
+        <p>Perfis devem conter informações reais e fotografias autênticas. A KAZI pode remover perfis falsos ou solicitar verificação.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">6. Publicação de Serviços</h2>
+        <p>Prestadores podem criar anúncios e definir preços. É proibido publicar serviços ilegais, enganar clientes ou usar imagens falsas.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">7. Contratação</h2>
+        <p>O acordo é direto entre as partes. A KAZI não participa no contrato nem se responsabiliza pela execução ou qualidade do serviço.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">8. Pagamentos</h2>
+        <p>Atualmente, os pagamentos são feitos fora da plataforma através de negociação direta. Futuramente poderemos implementar carteiras digitais.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">9. Taxas e Cobranças</h2>
+        <p>A KAZI reserva-se o direito de introduzir planos pagos, taxas por destaque de serviços ou aplicar comissões, comunicando previamente.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">10. Moderação e Banimento</h2>
+        <p>A KAZI pode monitorar atividades, remover conteúdos e suspender contas em caso de violação dos termos ou denúncias válidas, sem aviso prévio.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">11. Legislação Aplicável</h2>
+        <p>Estes termos são regidos pelas leis de Moçambique.</p>
+      </section>
     </div>
   </div>
 );
 
 const Privacy = () => (
   <div className="max-w-3xl mx-auto py-20 px-4">
-    <h1 className="text-4xl font-bold mb-8">Política de Privacidade</h1>
-    <div className="prose prose-brand max-w-none text-brand-ink/70 leading-relaxed space-y-6">
-      <p>Na KAZI, a tua privacidade é a nossa prioridade.</p>
-      <h2 className="text-xl font-bold text-brand-ink mt-8">1. Dados Recolhidos</h2>
-      <p>Recolhemos o teu nome, telemóvel, localização e informações profissionais para criar o teu perfil e permitir que outros utilizadores te encontrem.</p>
-      <h2 className="text-xl font-bold text-brand-ink mt-8">2. Uso de Dados</h2>
-      <p>Os teus dados são usados exclusivamente para o funcionamento da plataforma e para melhorar as nossas recomendações inteligentes.</p>
-      <h2 className="text-xl font-bold text-brand-ink mt-8">3. Partilha de Informação</h2>
-      <p>Nunca venderemos os teus dados a terceiros. A tua informação de contacto só é partilhada com utilizadores com quem inicias uma transação.</p>
+    <h1 className="text-4xl font-black tracking-tighter mb-8 text-brand-ink">Política de Privacidade</h1>
+    <div className="prose prose-brand max-w-none text-brand-ink/70 leading-relaxed space-y-8 font-medium">
+      <section>
+        <p className="text-lg">Na KAZI, valorizamos a tua privacidade. Esta política explica como recolhemos e protegemos os teus dados ao utilizares a nossa plataforma.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">1. Dados que Recolhemos</h2>
+        <p>Recolhemos dados fornecidos por ti (nome, telemóvel, email, foto, localização) e dados recolhidos automaticamente (IP, tipo de dispositivo, logs de acesso).</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">2. Finalidade do Uso</h2>
+        <p>Utilizamos os teus dados para o funcionamento da plataforma, personalização da experiência, segurança (prevenir fraudes) e comunicação.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">3. Partilha de Dados</h2>
+        <p>A KAZI não vende dados pessoais. Partilhamos informações entre utilizadores apenas quando há interação ou interesse em serviços.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">4. Armazenamento e Segurança</h2>
+        <p>Adotamos medidas técnicas como criptografia e servidores seguros. No entanto, nenhum sistema é 100% invulnerável.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">5. Direitos do Utilizador</h2>
+        <p>Tens direito a aceder, corrigir ou solicitar a eliminação dos teus dados através do nosso contacto oficial.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">6. Cookies</h2>
+        <p>Utilizamos cookies para melhorar a experiência, analisar comportamento e personalizar conteúdo.</p>
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-xl font-black text-brand-ink uppercase tracking-widest">7. Proteção de Menores</h2>
+        <p>A KAZI não é destinada a menores de 18 anos. Não recolhemos intencionalmente dados de menores.</p>
+      </section>
     </div>
   </div>
 );
 
 const Contact = () => (
-  <div className="max-w-3xl mx-auto py-20 px-4">
-    <h1 className="text-4xl font-bold mb-8">Contactos</h1>
-    <div className="bg-white p-12 rounded-[40px] border border-brand-gray shadow-xl">
-      <p className="text-lg text-brand-ink/60 mb-12 text-center">Estamos aqui para ajudar. Entra em contacto connosco através de qualquer um dos canais abaixo.</p>
-      <div className="grid md:grid-cols-2 gap-12">
-        <div className="space-y-8">
-          <div className="flex items-center space-x-4">
-            <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
-              <Mail className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-xs font-bold uppercase tracking-widest text-brand-ink/40">Email</p>
-              <p className="font-bold">suporte@kazi.co.mz</p>
-            </div>
+  <div className="max-w-4xl mx-auto py-20 px-4">
+    <h1 className="text-4xl font-black tracking-tighter mb-4 text-brand-ink">Suporte & Ajuda</h1>
+    <p className="text-brand-ink/40 font-bold mb-12 uppercase tracking-widest text-xs">Estamos aqui para te apoiar em cada passo</p>
+    
+    <div className="grid md:grid-cols-2 gap-8">
+      <div className="bg-white p-8 rounded-[40px] border border-brand-gray shadow-sm space-y-8">
+        <div className="flex items-center space-x-4">
+          <div className="w-14 h-14 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
+            <Mail className="w-7 h-7" />
           </div>
-          <div className="flex items-center space-x-4">
-            <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
-              <Phone className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-xs font-bold uppercase tracking-widest text-brand-ink/40">Telefone</p>
-              <p className="font-bold">+258 84 000 0000</p>
-            </div>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-brand-ink/40">Email de Suporte</p>
+            <p className="font-black text-lg text-brand-ink">weepkazi@gmail.com</p>
+            <p className="text-xs font-bold text-brand-ink/40">Resposta em 24-48h úteis</p>
           </div>
         </div>
-        <div className="space-y-8">
-          <div className="flex items-center space-x-4">
-            <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
-              <MapPin className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-xs font-bold uppercase tracking-widest text-brand-ink/40">Escritório</p>
-              <p className="font-bold">Moçambique</p>
-            </div>
+
+        <div className="flex items-center space-x-4">
+          <div className="w-14 h-14 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
+            <Phone className="w-7 h-7" />
           </div>
-          <div className="flex items-center space-x-4">
-            <div className="w-12 h-12 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
-              <Globe className="w-6 h-6" />
-            </div>
-            <div>
-              <p className="text-xs font-bold uppercase tracking-widest text-brand-ink/40">Website</p>
-              <p className="font-bold">www.kazi.co.mz</p>
-            </div>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-brand-ink/40">Atendimento Telefónico</p>
+            <p className="font-black text-lg text-brand-ink">+258 84 104 2406</p>
+            <p className="text-xs font-bold text-brand-ink/40">Seg-Sex, 08:00 às 17:00</p>
           </div>
         </div>
+
+        <div className="flex items-center space-x-4">
+          <div className="w-14 h-14 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
+            <Globe className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-brand-ink/40">Website Oficial</p>
+            <p className="font-black text-lg text-brand-ink">www.kazi.co.mz</p>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-4">
+          <div className="w-14 h-14 bg-primary/10 rounded-2xl flex items-center justify-center text-primary">
+            <MapPin className="w-7 h-7" />
+          </div>
+          <div>
+            <p className="text-[10px] font-black uppercase tracking-widest text-brand-ink/40">Escritório</p>
+            <p className="font-black text-lg text-brand-ink">Moçambique</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-brand-ink text-white p-10 rounded-[40px] shadow-2xl relative overflow-hidden">
+        <div className="relative z-10">
+          <h3 className="text-2xl font-black mb-6">Compromisso KAZI</h3>
+          <ul className="space-y-4 text-white/70 font-bold text-sm">
+            <li className="flex items-center gap-3">
+              <CheckCircle className="w-5 h-5 text-primary" />
+              Responder o mais rápido possível
+            </li>
+            <li className="flex items-center gap-3">
+              <CheckCircle className="w-5 h-5 text-primary" />
+              Tratar todos com respeito
+            </li>
+            <li className="flex items-center gap-3">
+              <CheckCircle className="w-5 h-5 text-primary" />
+              Garantir confidencialidade
+            </li>
+            <li className="flex items-center gap-3">
+              <CheckCircle className="w-5 h-5 text-primary" />
+              Resolver problemas com transparência
+            </li>
+          </ul>
+          
+          <div className="mt-12 p-6 bg-white/10 rounded-3xl backdrop-blur">
+            <p className="text-xs font-black uppercase tracking-widest mb-2 text-primary">Dica de Segurança</p>
+            <p className="text-xs leading-relaxed">Nunca partilhes a tua senha e verifica sempre os perfis antes de negociar pagamentos.</p>
+          </div>
+        </div>
+        <HelpCircle className="absolute -bottom-10 -right-10 w-48 h-48 text-white/5" />
       </div>
     </div>
   </div>
@@ -5859,7 +6734,7 @@ const CreateService = () => {
   const [mode, setMode] = useState<'select' | 'offer'>('select');
 
   if (loading) return <LoadingScreen />;
-  if (!profile) return <LoginPrompt message="Inicie sessão para criar um serviço" />;
+  if (!profile) return <LoginPage message="Inicie sessão para criar um serviço" />;
 
   if (mode === 'select') {
     return (
@@ -5915,7 +6790,7 @@ const Settings = () => {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   if (loading) return <LoadingScreen />;
-  if (!profile) return <LoginPrompt message="Inicie sessão para ver as definições" />;
+  if (!profile) return <LoginPage message="Inicie sessão para ver as definições" />;
 
   const handleLogout = async () => {
     await logout();
@@ -6131,12 +7006,35 @@ const Jobs: React.FC = () => {
                     <p className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-4">
                       {formatDistanceToNow(safeToDate(job.createdAt), { addSuffix: true, locale: ptBR })}
                     </p>
-                    <Link 
-                      to={`/jobs/${job.id}`}
-                      className="inline-flex items-center gap-2 text-primary font-bold hover:gap-3 transition-all"
-                    >
-                      Ver Detalhes <ChevronRight className="w-4 h-4" />
-                    </Link>
+                    <div className="flex items-center justify-end gap-3">
+                      {profile?.uid === job.authorId && (
+                        <button 
+                          onClick={async (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (confirm('Queres apagar esta vaga de emprego?')) {
+                              try {
+                                await deleteDoc(doc(db, 'jobs', job.id));
+                                toast.success('Vaga apagada.');
+                              } catch (err) {
+                                console.error('Error deleting job:', err);
+                                toast.error('Erro ao apagar vaga.');
+                              }
+                            }
+                          }}
+                          className="p-2 bg-red-50 text-red-600 rounded-xl hover:bg-red-100 transition-colors"
+                          title="Apagar vaga"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      <Link 
+                        to={`/jobs/${job.id}`}
+                        className="inline-flex items-center gap-2 text-primary font-bold hover:gap-3 transition-all"
+                      >
+                        Ver Detalhes <ChevronRight className="w-4 h-4" />
+                      </Link>
+                    </div>
                   </div>
                 </div>
               </motion.div>
@@ -6158,6 +7056,87 @@ const Jobs: React.FC = () => {
 };
 
 // --- Shared Components ---
+const TERMS_AND_CONDITIONS = `
+# Termos e Condições da KAZI
+
+Bem-vindo à KAZI. Ao utilizar a nossa plataforma, concordas com os seguintes termos:
+
+1. **Uso da Plataforma**: A KAZI é um mercado para conectar prestadores de serviços e clientes em Moçambique e África do Sul.
+2. **Responsabilidade**: Não nos responsabilizamos pela qualidade dos serviços prestados ou pela conduta dos utilizadores.
+3. **Pagamentos**: Todos os pagamentos e negociações são feitos diretamente entre o cliente e o prestador.
+4. **Conduta**: É proibido publicar conteúdo ilegal, ofensivo ou fraudulento.
+5. **Privacidade**: Respeitamos os teus dados. Consulta a nossa Política de Privacidade.
+`;
+
+const PRIVACY_POLICY = `
+# Política de Privacidade da KAZI
+
+A tua privacidade é importante para nós:
+
+1. **Dados Recolhidos**: Recolhemos o teu nome, e-mail, número de telefone e localização para o funcionamento da plataforma.
+2. **Uso de Dados**: Os teus dados são usados apenas para te conectar com outros utilizadores e melhorar a experiência na KAZI.
+3. **Partilha**: Não vendemos os teus dados a terceiros.
+4. **Segurança**: Implementamos medidas de segurança para proteger as tuas informações.
+`;
+
+const COMMUNITY_RULES = `
+# Regras da Comunidade KAZI
+
+Para manter um ambiente saudável e produtivo:
+
+1. **Respeito Mútuo**: Trata todos os membros com respeito e cortesia.
+2. **Sem Spam**: Não publiques anúncios repetitivos ou irrelevantes.
+3. **Conteúdo Relevante**: Mantém as discussões focadas no propósito da comunidade.
+4. **Segurança**: Não partilhes informações sensíveis ou perigosas.
+5. **Moderação**: Os administradores têm o direito de remover conteúdo ou membros que violem estas regras.
+`;
+
+const TermsModal: React.FC<{
+  show: boolean;
+  onClose: () => void;
+  type: 'terms' | 'privacy' | 'rules';
+}> = ({ show, onClose, type }) => {
+  if (!show) return null;
+
+  const content = {
+    terms: TERMS_AND_CONDITIONS,
+    privacy: PRIVACY_POLICY,
+    rules: COMMUNITY_RULES
+  }[type];
+
+  const title = {
+    terms: 'Termos e Condições',
+    privacy: 'Política de Privacidade',
+    rules: 'Regras da Comunidade'
+  }[type];
+
+  return (
+    <div className="fixed inset-0 z-[250] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-white w-full max-w-2xl rounded-[40px] p-8 shadow-2xl max-h-[80vh] flex flex-col"
+      >
+        <div className="flex justify-between items-center mb-6">
+          <h3 className="text-xl font-black text-gray-900">{title}</h3>
+          <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto pr-2 prose prose-sm max-w-none text-gray-600 whitespace-pre-wrap font-medium leading-relaxed">
+          {content}
+        </div>
+        <button 
+          onClick={onClose}
+          className="w-full mt-8 py-4 bg-primary text-white rounded-2xl font-black shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
+        >
+          Entendi
+        </button>
+      </motion.div>
+    </div>
+  );
+};
+
 const ConfirmModal: React.FC<{
   show: boolean;
   title: string;
@@ -6202,7 +7181,7 @@ const ConfirmModal: React.FC<{
 
 const JobDetails: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const { profile } = useAuth();
+  const { profile, setShowLoginPrompt } = useAuth();
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(true);
   const [isClosing, setIsClosing] = useState(false);
@@ -6229,7 +7208,7 @@ const JobDetails: React.FC = () => {
 
   const contactRecruiter = async () => {
     if (!profile) {
-      toast.error('Faz login para contactar o recrutador.');
+      setShowLoginPrompt(true);
       return;
     }
     if (!job) return;
@@ -6390,6 +7369,7 @@ interface Community {
   creatorId: string;
   createdAt: any;
   requiresApproval?: boolean;
+  rules?: string;
 }
 
 // --- Communities Feature ---
@@ -6398,9 +7378,10 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
   const [communities, setCommunities] = useState<Community[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
-  const [newComm, setNewComm] = useState({ name: '', description: '', category: 'Geral', requiresApproval: false });
+  const [newComm, setNewComm] = useState({ name: '', description: '', category: 'Geral', requiresApproval: false, acceptedRules: false });
   const [pendingPhoto, setPendingPhoto] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const [showTerms, setShowTerms] = useState<null | 'rules'>(null);
   const { profile } = useAuth();
   const navigate = useNavigate();
 
@@ -6431,6 +7412,11 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
 
   const handleCreate = async () => {
     if (!newComm.name || !newComm.description || !profile) return;
+
+    if (!newComm.acceptedRules) {
+      toast.error('Precisas de aceitar as Regras da Comunidade.');
+      return;
+    }
 
     // Internal Validation Algorithm
     const nameVal = ValidationService.validateContent(newComm.name, 3);
@@ -6469,7 +7455,7 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
 
       setShowCreate(false);
       setPendingPhoto(null);
-      setNewComm({ name: '', description: '', category: 'Geral', requiresApproval: false });
+      setNewComm({ name: '', description: '', category: 'Geral', requiresApproval: false, acceptedRules: false });
       navigate(`/communities/${docRef.id}`);
     } catch (err) {
       console.error('Error creating community:', err);
@@ -6589,6 +7575,19 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
                   </button>
                 </div>
 
+                <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-2xl">
+                  <input 
+                    type="checkbox" 
+                    id="comm-rules"
+                    checked={newComm.acceptedRules}
+                    onChange={(e) => setNewComm(prev => ({ ...prev, acceptedRules: e.target.checked }))}
+                    className="w-5 h-5 rounded border-gray-300 text-primary focus:ring-primary"
+                  />
+                  <label htmlFor="comm-rules" className="text-xs font-bold text-gray-600 cursor-pointer">
+                    Eu aceito as <button onClick={() => setShowTerms('rules')} className="text-primary underline">Regras da Comunidade</button>
+                  </label>
+                </div>
+
                 <div className="flex gap-3 pt-4">
                   <button 
                     onClick={() => setShowCreate(false)}
@@ -6598,7 +7597,7 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
                   </button>
                   <button 
                     onClick={handleCreate}
-                    disabled={isCreating}
+                    disabled={isCreating || !newComm.acceptedRules}
                     className="flex-1 py-4 bg-primary text-white rounded-2xl font-black hover:bg-primary/90 transition-all shadow-lg shadow-primary/20 disabled:opacity-50"
                   >
                     {isCreating ? <Loader2 className="w-6 h-6 animate-spin mx-auto" /> : 'Criar'}
@@ -6606,6 +7605,12 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
                 </div>
               </div>
             </motion.div>
+
+            <TermsModal 
+              show={!!showTerms} 
+              onClose={() => setShowTerms(null)} 
+              type={showTerms || 'rules'} 
+            />
           </div>
         )}
       </AnimatePresence>
@@ -6644,9 +7649,30 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
                       <span className="text-xs font-bold">{community.memberCount} membros</span>
                     </div>
                     {community.creatorId === profile?.uid && (
-                      <div className="flex items-center gap-1.5 text-primary bg-primary/5 px-2 py-0.5 rounded-full">
-                        <Shield className="w-3 h-3" />
-                        <span className="text-[10px] font-black uppercase tracking-tighter">Admin</span>
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 text-primary bg-primary/5 px-2 py-0.5 rounded-full">
+                          <Shield className="w-3 h-3" />
+                          <span className="text-[10px] font-black uppercase tracking-tighter">Admin</span>
+                        </div>
+                        <button
+                          onClick={async (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (confirm('Tens a certeza que queres eliminar esta comunidade? Esta ação é irreversível.')) {
+                              try {
+                                await deleteDoc(doc(db, 'communities', community.id));
+                                toast.success('Comunidade eliminada.');
+                              } catch (err) {
+                                console.error('Error deleting community:', err);
+                                toast.error('Erro ao eliminar comunidade.');
+                              }
+                            }
+                          }}
+                          className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                          title="Eliminar comunidade"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     )}
                   </div>
@@ -6662,10 +7688,11 @@ const CommunityList: React.FC<{ hideHeader?: boolean }> = ({ hideHeader }) => {
 
 const CommunityChat: React.FC = () => {
   const { communityId } = useParams<{ communityId: string }>();
-  const { profile, loading: authLoading } = useAuth();
+  const { profile, loading: authLoading, setShowLoginPrompt } = useAuth();
   const [community, setCommunity] = useState<Community | null>(null);
   const [membership, setMembership] = useState<any | null>(null);
   const [pendingRequests, setPendingRequests] = useState<any[]>([]);
+  const [members, setMembers] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [pendingImage, setPendingImage] = useState<string | null>(null);
@@ -6673,6 +7700,11 @@ const CommunityChat: React.FC = () => {
   const [activeMessageMenu, setActiveMessageMenu] = useState<string | null>(null);
   const [showAdminMenu, setShowAdminMenu] = useState(false);
   const [showRequests, setShowRequests] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
+  const [showRules, setShowRules] = useState(false);
+  const [isEditingCommunity, setIsEditingCommunity] = useState(false);
+  const [editCommunityData, setEditCommunityData] = useState({ name: '', description: '', photoURL: '', rules: '' });
+  const [messageToDelete, setMessageToDelete] = useState<{ id: string, forEveryone: boolean } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
@@ -6680,12 +7712,41 @@ const CommunityChat: React.FC = () => {
   const isApproved = membership?.status === 'approved';
   const isPending = membership?.status === 'pending';
 
+  // Offline Persistence: Load from localStorage on mount
+  useEffect(() => {
+    if (!communityId) return;
+    const cached = localStorage.getItem(`community_messages_${communityId}`);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        setMessages(parsed);
+      } catch (e) {
+        console.error('Error parsing cached community messages', e);
+      }
+    }
+  }, [communityId]);
+
+  // Offline Persistence: Save to localStorage when messages update
+  useEffect(() => {
+    if (!communityId || messages.length === 0) return;
+    localStorage.setItem(`community_messages_${communityId}`, JSON.stringify(messages.slice(-100)));
+  }, [communityId, messages]);
+
   useEffect(() => {
     if (!communityId) return;
 
     const unsubscribeComm = onSnapshot(doc(db, 'communities', communityId), (d) => {
-      if (d.exists()) setCommunity({ id: d.id, ...d.data() } as Community);
-      else {
+      if (d.exists()) {
+        const data = d.data();
+        const comm = { id: d.id, ...data } as Community;
+        setCommunity(comm);
+        setEditCommunityData({
+          name: comm.name || '',
+          description: comm.description || '',
+          photoURL: comm.photoURL || '',
+          rules: comm.rules || ''
+        });
+      } else {
         toast.error('Comunidade não encontrada.');
         navigate('/communities');
       }
@@ -6719,11 +7780,38 @@ const CommunityChat: React.FC = () => {
     );
 
     const unsubscribeMessages = onSnapshot(q, (snapshot) => {
-      setMessages(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
-      setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, `communities/${communityId}/messages`));
+      const newMessages = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      
+      setMessages(prev => {
+        const merged = [...prev];
+        newMessages.forEach(msg => {
+          const index = merged.findIndex(m => m.id === msg.id);
+          if (index === -1) {
+            merged.push(msg);
+          } else {
+            merged[index] = msg;
+          }
+        });
+        return merged.sort((a, b) => {
+          const dateA = safeToDate(a.createdAt).getTime();
+          const dateB = safeToDate(b.createdAt).getTime();
+          return dateA - dateB;
+        });
+      });
 
-    return () => unsubscribeMessages();
+      setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }, (err) => handleFirestoreError(err, OperationType.GET, `communities/${communityId}/messages`));
+
+    // Fetch all members
+    const membersQ = query(collection(db, 'communities', communityId, 'members'), where('status', '==', 'approved'));
+    const unsubscribeMembers = onSnapshot(membersQ, (snapshot) => {
+      setMembers(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, `communities/${communityId}/members`));
+
+    return () => {
+      unsubscribeMessages();
+      unsubscribeMembers();
+    };
   }, [communityId, membership]);
 
   useEffect(() => {
@@ -6738,7 +7826,11 @@ const CommunityChat: React.FC = () => {
   }, [communityId, profile, community]);
 
   const handleJoin = async () => {
-    if (!communityId || !profile || !community) return;
+    if (!profile) {
+      setShowLoginPrompt(true);
+      return;
+    }
+    if (!communityId || !community) return;
     try {
       const status = community.requiresApproval ? 'pending' : 'approved';
       await setDoc(doc(db, 'communities', communityId, 'members', profile.uid), {
@@ -6871,6 +7963,35 @@ const CommunityChat: React.FC = () => {
       e.target.value = '';
     }
   };
+  
+  const handleEditPhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !isAdmin) return;
+    try {
+      const compressedBase64 = await compressImage(file, 800, 800, 0.7);
+      setEditCommunityData({ ...editCommunityData, photoURL: compressedBase64 });
+    } catch (err) {
+      console.error('Error processing image:', err);
+      toast.error('Erro ao processar a imagem.');
+    }
+  };
+
+  const handleRemoveMember = async (memberUid: string) => {
+    if (!communityId || !isAdmin || memberUid === profile?.uid) return;
+    
+    if (!confirm('Tens a certeza que queres remover este membro?')) return;
+
+    try {
+      await deleteDoc(doc(db, 'communities', communityId, 'members', memberUid));
+      await updateDoc(doc(db, 'communities', communityId), {
+        memberCount: increment(-1)
+      });
+      toast.success('Membro removido com sucesso.');
+    } catch (err) {
+      console.error('Error removing member:', err);
+      toast.error('Erro ao remover membro.');
+    }
+  };
 
   const deleteCommunity = async () => {
     if (!communityId || !community || community.creatorId !== profile?.uid) return;
@@ -6880,6 +8001,42 @@ const CommunityChat: React.FC = () => {
       navigate('/chats?tab=communities');
     } catch (err) {
       console.error('Error deleting community:', err);
+    }
+  };
+
+  const handleUpdateCommunity = async () => {
+    if (!communityId || !isAdmin) return;
+    if (!editCommunityData.name.trim() || !editCommunityData.description.trim()) {
+      toast.error('Nome e descrição são obrigatórios.');
+      return;
+    }
+    try {
+      await updateDoc(doc(db, 'communities', communityId), {
+        name: editCommunityData.name.trim(),
+        description: editCommunityData.description.trim(),
+        photoURL: editCommunityData.photoURL.trim() || null,
+        rules: editCommunityData.rules.trim() || null
+      });
+      toast.success('Comunidade atualizada com sucesso.');
+      setIsEditingCommunity(false);
+    } catch (err) {
+      console.error('Error updating community:', err);
+      toast.error('Erro ao atualizar comunidade.');
+    }
+  };
+
+  const handleLeaveCommunity = async () => {
+    if (!communityId || !profile) return;
+    try {
+      await deleteDoc(doc(db, 'communities', communityId, 'members', profile.uid));
+      await updateDoc(doc(db, 'communities', communityId), {
+        memberCount: increment(-1)
+      });
+      toast.success('Saíste da comunidade.');
+      navigate('/chats?tab=communities');
+    } catch (err) {
+      console.error('Error leaving community:', err);
+      toast.error('Erro ao sair da comunidade.');
     }
   };
 
@@ -6917,7 +8074,7 @@ const CommunityChat: React.FC = () => {
 
   if (!isApproved) {
     return (
-      <div className="flex flex-col h-[calc(100vh-64px)] bg-white max-w-4xl mx-auto border-x border-gray-100">
+      <div className="flex flex-col fixed inset-0 bg-white z-[60] md:relative md:inset-auto md:h-[calc(100vh-64px)] md:max-w-4xl md:mx-auto md:border-x md:border-gray-100">
         <div className="bg-white px-6 py-4 border-b border-gray-100 flex items-center gap-4">
           <Link to="/chats?tab=communities" className="p-2 hover:bg-gray-100 rounded-full transition-colors">
             <ChevronLeft className="w-6 h-6 text-gray-600" />
@@ -6925,43 +8082,77 @@ const CommunityChat: React.FC = () => {
           <div className="flex-1 min-w-0">
             <h3 className="font-black text-lg text-gray-900 truncate">{community.name}</h3>
           </div>
+          {community.rules && (
+            <button 
+              onClick={() => setShowRules(true)}
+              className="p-2 hover:bg-gray-100 rounded-full transition-colors text-primary"
+              title="Ver Regras"
+            >
+              <BookOpen className="w-5 h-5" />
+            </button>
+          )}
         </div>
         
-        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-          <div className="w-32 h-32 rounded-[40px] bg-primary/10 flex items-center justify-center text-primary mb-6 shadow-xl shadow-primary/5">
+        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center overflow-y-auto">
+          <div className="w-32 h-32 rounded-[40px] bg-primary/10 flex items-center justify-center text-primary mb-6 shadow-xl shadow-primary/5 relative">
             {community.photoURL ? (
               <img src={community.photoURL} className="w-full h-full object-cover rounded-[40px]" referrerPolicy="no-referrer" />
             ) : (
               <Users className="w-16 h-16" />
             )}
+            <div className="absolute -bottom-2 -right-2 bg-white p-2 rounded-2xl shadow-lg">
+              <Shield className="w-6 h-6 text-primary" />
+            </div>
           </div>
+          
           <h2 className="text-3xl font-black text-gray-900 mb-2">{community.name}</h2>
-          <p className="text-primary font-black uppercase tracking-widest text-xs mb-4">{community.category}</p>
+          <p className="text-primary font-black uppercase tracking-widest text-[10px] mb-4 bg-primary/5 px-3 py-1 rounded-full">{community.category}</p>
+          
           <p className="text-gray-500 font-medium max-w-md mb-8 leading-relaxed">
             {community.description}
           </p>
           
-          <div className="flex items-center gap-6 mb-10">
-            <div className="text-center">
-              <p className="text-2xl font-black text-gray-900">{community.memberCount}</p>
-              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Membros</p>
+          <div className="flex flex-col items-center gap-6 mb-10 w-full max-w-sm">
+            <div className="flex items-center justify-center -space-x-3">
+              {members.slice(0, 5).map((m, i) => (
+                <img 
+                  key={m.id}
+                  src={m.photoURL || `https://ui-avatars.com/api/?name=${m.displayName}`}
+                  className="w-10 h-10 rounded-full border-4 border-white object-cover shadow-sm"
+                  style={{ zIndex: 5 - i }}
+                  referrerPolicy="no-referrer"
+                />
+              ))}
+              {members.length > 5 && (
+                <div className="w-10 h-10 rounded-full border-4 border-white bg-gray-100 flex items-center justify-center text-[10px] font-black text-gray-400 z-0 shadow-sm">
+                  +{members.length - 5}
+                </div>
+              )}
             </div>
-            <div className="w-px h-8 bg-gray-100" />
-            <div className="text-center">
-              <p className="text-2xl font-black text-gray-900">{community.requiresApproval ? 'Sim' : 'Não'}</p>
-              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Aprovação</p>
+            
+            <div className="grid grid-cols-2 gap-4 w-full">
+              <div className="bg-gray-50 p-4 rounded-3xl text-center border border-gray-100">
+                <p className="text-2xl font-black text-gray-900">{members.length}</p>
+                <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Membros</p>
+              </div>
+              <div className="bg-gray-50 p-4 rounded-3xl text-center border border-gray-100">
+                <p className="text-2xl font-black text-gray-900">{community.requiresApproval ? 'Sim' : 'Não'}</p>
+                <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Aprovação</p>
+              </div>
             </div>
           </div>
 
           {isPending ? (
-            <div className="bg-yellow-50 text-yellow-700 px-8 py-4 rounded-2xl font-black flex items-center gap-3 border border-yellow-100">
-              <Loader2 className="w-5 h-5 animate-spin" />
+            <div className="w-full max-w-xs bg-yellow-50 text-yellow-700 p-6 rounded-[32px] font-black text-sm flex flex-col items-center gap-3 border border-yellow-100 shadow-lg shadow-yellow-500/5">
+              <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center shadow-sm">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
               Aguardando aprovação do administrador...
             </div>
           ) : (
             <button 
               onClick={handleJoin}
-              className="w-full max-w-xs py-5 bg-primary text-white rounded-[24px] font-black text-lg shadow-xl shadow-primary/20 hover:scale-105 transition-all active:scale-95 flex items-center justify-center gap-3"
+              className="w-full max-w-xs py-5 bg-primary text-white rounded-[32px] font-black text-lg shadow-2xl shadow-primary/30 hover:scale-105 transition-all active:scale-95 flex items-center justify-center gap-3"
             >
               <Plus className="w-6 h-6" />
               {community.requiresApproval ? 'Pedir para Entrar' : 'Entrar na Comunidade'}
@@ -6973,7 +8164,7 @@ const CommunityChat: React.FC = () => {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-64px)] bg-white max-w-4xl mx-auto border-x border-gray-100">
+    <div className="flex flex-col fixed inset-0 bg-white z-[60] md:relative md:inset-auto md:h-[calc(100vh-64px)] md:max-w-4xl md:mx-auto md:border-x md:border-gray-100">
       <div className="bg-white px-6 py-4 border-b border-gray-100 flex items-center gap-4 relative">
         <Link to="/chats?tab=communities" className="p-2 hover:bg-gray-100 rounded-full transition-colors">
           <ChevronLeft className="w-6 h-6 text-gray-600" />
@@ -6985,11 +8176,20 @@ const CommunityChat: React.FC = () => {
             <Users className="w-6 h-6" />
           )}
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setShowMembers(true)}>
           <h3 className="font-black text-lg text-gray-900 leading-none truncate">{community.name}</h3>
-          <p className="text-xs text-gray-400 mt-1 font-bold">{community.memberCount} membros</p>
+          <p className="text-xs text-gray-400 mt-1 font-bold">{members.length} membros</p>
         </div>
         <div className="flex items-center gap-2">
+          {community.rules && (
+            <button 
+              onClick={() => setShowRules(true)}
+              className="p-2 hover:bg-gray-100 rounded-full transition-colors text-primary"
+              title="Ver Regras"
+            >
+              <BookOpen className="w-5 h-5" />
+            </button>
+          )}
           {isAdmin && pendingRequests.length > 0 && (
             <button 
               onClick={() => setShowRequests(true)}
@@ -7001,39 +8201,222 @@ const CommunityChat: React.FC = () => {
               </span>
             </button>
           )}
-          {isAdmin && (
-            <div className="relative">
-              <button 
-                onClick={() => setShowAdminMenu(!showAdminMenu)}
-                className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-400"
-              >
-                <SettingsIcon className="w-5 h-5" />
-              </button>
-              <AnimatePresence>
-                {showAdminMenu && (
-                  <>
-                    <div className="fixed inset-0 z-10" onClick={() => setShowAdminMenu(false)} />
-                    <motion.div 
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 z-20 overflow-hidden"
-                    >
+          <div className="relative">
+            <button 
+              onClick={() => setShowAdminMenu(!showAdminMenu)}
+              className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-400"
+            >
+              <SettingsIcon className="w-5 h-5" />
+            </button>
+            <AnimatePresence>
+              {showAdminMenu && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setShowAdminMenu(false)} />
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 10 }}
+                    className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 z-20 overflow-hidden"
+                  >
+                    {isAdmin && (
+                      <>
+                        <button 
+                          onClick={() => {
+                            setIsEditingCommunity(true);
+                            setShowAdminMenu(false);
+                          }}
+                          className="w-full px-4 py-3 text-left text-sm font-bold text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors"
+                        >
+                          <SettingsIcon className="w-4 h-4" />
+                          Editar Comunidade
+                        </button>
+                        <button 
+                          onClick={deleteCommunity}
+                          className="w-full px-4 py-3 text-left text-sm font-bold text-red-500 hover:bg-red-50 flex items-center gap-2 transition-colors"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          Eliminar Comunidade
+                        </button>
+                      </>
+                    )}
+                    {!isAdmin && (
                       <button 
-                        onClick={deleteCommunity}
+                        onClick={handleLeaveCommunity}
                         className="w-full px-4 py-3 text-left text-sm font-bold text-red-500 hover:bg-red-50 flex items-center gap-2 transition-colors"
                       >
-                        <Trash2 className="w-4 h-4" />
-                        Eliminar Comunidade
+                        <LogOut className="w-4 h-4" />
+                        Sair da Comunidade
                       </button>
-                    </motion.div>
-                  </>
-                )}
-              </AnimatePresence>
-            </div>
-          )}
+                    )}
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </div>
+
+      <AnimatePresence>
+        {showRules && (
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white p-8 rounded-[40px] max-w-md w-full shadow-2xl"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-black text-gray-900">Regras da Comunidade</h3>
+                <button onClick={() => setShowRules(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="prose prose-sm max-w-none text-gray-600 whitespace-pre-wrap">
+                {community.rules}
+              </div>
+              <button 
+                onClick={() => setShowRules(false)}
+                className="w-full mt-8 py-4 bg-primary text-white rounded-2xl font-black shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
+              >
+                Entendi
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isEditingCommunity && (
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white p-8 rounded-[40px] max-w-md w-full shadow-2xl overflow-y-auto max-h-[90vh]"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <h3 className="text-xl font-black text-gray-900">Editar Comunidade</h3>
+                <button onClick={() => setIsEditingCommunity(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Foto da Comunidade</label>
+                  <div className="flex items-center gap-4">
+                    <div className="w-20 h-20 rounded-2xl bg-gray-50 flex items-center justify-center overflow-hidden border-2 border-dashed border-gray-200">
+                      {editCommunityData.photoURL ? (
+                        <img src={editCommunityData.photoURL} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                      ) : (
+                        <Users className="w-8 h-8 text-gray-300" />
+                      )}
+                    </div>
+                    <label className="flex-1">
+                      <div className="bg-brand-bg text-brand-ink px-4 py-3 rounded-xl text-xs font-black cursor-pointer hover:bg-brand-gray transition-colors text-center border border-brand-gray">
+                        Alterar Foto
+                      </div>
+                      <input type="file" accept="image/*" className="hidden" onChange={handleEditPhotoUpload} />
+                    </label>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Nome</label>
+                  <input 
+                    type="text"
+                    value={editCommunityData.name}
+                    onChange={(e) => setEditCommunityData({ ...editCommunityData, name: e.target.value })}
+                    className="w-full bg-gray-50 border-none rounded-2xl px-4 py-3 text-sm focus:ring-2 focus:ring-primary/20 transition-all font-medium"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Descrição</label>
+                  <textarea 
+                    value={editCommunityData.description}
+                    onChange={(e) => setEditCommunityData({ ...editCommunityData, description: e.target.value })}
+                    className="w-full bg-gray-50 border-none rounded-2xl px-4 py-3 text-sm focus:ring-2 focus:ring-primary/20 transition-all font-medium min-h-[100px]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Regras (Opcional)</label>
+                  <textarea 
+                    value={editCommunityData.rules}
+                    onChange={(e) => setEditCommunityData({ ...editCommunityData, rules: e.target.value })}
+                    className="w-full bg-gray-50 border-none rounded-2xl px-4 py-3 text-sm focus:ring-2 focus:ring-primary/20 transition-all font-medium min-h-[100px]"
+                    placeholder="Regras da comunidade..."
+                  />
+                </div>
+                <button 
+                  onClick={handleUpdateCommunity}
+                  className="w-full py-4 bg-primary text-white rounded-2xl font-black shadow-xl shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all"
+                >
+                  Guardar Alterações
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showMembers && (
+          <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white p-8 rounded-[40px] max-w-md w-full shadow-2xl"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-2xl font-black text-gray-900">Membros</h2>
+                  <p className="text-xs text-gray-400 font-bold uppercase tracking-widest">{members.length} participantes</p>
+                </div>
+                <button onClick={() => setShowMembers(false)} className="p-2 hover:bg-gray-100 rounded-full">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              <div className="space-y-4 max-h-[60vh] overflow-y-auto pr-2">
+                {members.map((member) => (
+                  <Link 
+                    key={member.id} 
+                    to={`/profile/${member.uid}`}
+                    onClick={() => setShowMembers(false)}
+                    className="flex items-center gap-4 p-4 bg-gray-50 rounded-2xl hover:bg-gray-100 transition-colors"
+                  >
+                    <img 
+                      src={member.photoURL || `https://ui-avatars.com/api/?name=${member.displayName}`} 
+                      className="w-12 h-12 rounded-full object-cover" 
+                      referrerPolicy="no-referrer" 
+                    />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-black text-gray-900 truncate">{member.displayName}</p>
+                      <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">
+                        {member.role === 'admin' ? 'Administrador' : 'Membro'}
+                      </p>
+                    </div>
+                    {member.role === 'admin' ? (
+                      <Shield className="w-4 h-4 text-primary" />
+                    ) : isAdmin && (
+                      <button 
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleRemoveMember(member.uid);
+                        }}
+                        className="p-2 text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                        title="Remover membro"
+                      >
+                        <UserMinus className="w-4 h-4" />
+                      </button>
+                    )}
+                  </Link>
+                ))}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {showRequests && (
@@ -7129,20 +8512,34 @@ const CommunityChat: React.FC = () => {
                     </>
                   )}
                   
-                  {/* Message Menu Button */}
-                  {(isAdmin || isMe) && !msg.deletedForAll && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setActiveMessageMenu(activeMessageMenu === msg.id ? null : msg.id);
-                      }}
-                      className={cn(
-                        "absolute top-1/2 -translate-y-1/2 p-1.5 rounded-full opacity-0 group-hover/msg:opacity-100 transition-all hover:bg-black/5",
-                        isMe ? "-left-10 text-gray-400" : "-right-10 text-gray-400"
+                  {/* Message Actions */}
+                  {!msg.deletedForAll && (isAdmin || isMe) && (
+                    <div className={cn(
+                      "absolute top-1/2 -translate-y-1/2 flex items-center gap-1 transition-all",
+                      isMe ? "-left-12" : "-right-12"
+                    )}>
+                      {(isMe || isAdmin) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setMessageToDelete({ id: msg.id, forEveryone: true });
+                          }}
+                          className="p-1.5 rounded-full text-red-400 hover:bg-red-50 transition-colors"
+                          title="Apagar para todos"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       )}
-                    >
-                      <MoreVertical className="w-4 h-4" />
-                    </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveMessageMenu(activeMessageMenu === msg.id ? null : msg.id);
+                        }}
+                        className="p-1.5 rounded-full text-gray-400 hover:bg-black/5 transition-all"
+                      >
+                        <MoreVertical className="w-4 h-4" />
+                      </button>
+                    </div>
                   )}
 
                   {/* Message Menu Dropdown */}
@@ -7156,7 +8553,7 @@ const CommunityChat: React.FC = () => {
                     >
                       <button
                         onClick={() => {
-                          deleteMessage(msg.id, false);
+                          setMessageToDelete({ id: msg.id, forEveryone: false });
                           setActiveMessageMenu(null);
                         }}
                         className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
@@ -7164,18 +8561,6 @@ const CommunityChat: React.FC = () => {
                         <Trash2 className="w-4 h-4" />
                         Apagar para mim
                       </button>
-                      {(isMe || isAdmin) && !msg.deletedForAll && (
-                        <button
-                          onClick={() => {
-                            deleteMessage(msg.id, true);
-                            setActiveMessageMenu(null);
-                          }}
-                          className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                          Apagar para todos
-                        </button>
-                      )}
                     </div>
                   )}
                 </div>
@@ -7234,115 +8619,18 @@ const CommunityChat: React.FC = () => {
           </div>
         </div>
       </div>
-    </div>
-  );
-};
-
-const Notifications: React.FC = () => {
-  const { profile } = useAuth();
-  const [notifications, setNotifications] = useState<Job[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    if (!profile) {
-      setLoading(false);
-      return;
-    }
-
-    // Update lastCheckedNotifications
-    const updateLastChecked = async () => {
-      try {
-        await updateDoc(doc(db, 'users', profile.uid), {
-          lastCheckedNotifications: serverTimestamp()
-        });
-      } catch (err) {
-        console.error('Error updating lastCheckedNotifications:', err);
-      }
-    };
-    updateLastChecked();
-
-    const q = query(
-      collection(db, 'jobs'),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const matchingJobs = snapshot.docs.filter(d => {
-        const job = d.data() as Job;
-        const matchesInterest = profile.lookingFor && (job.title.toLowerCase().includes(profile.lookingFor.toLowerCase()) || job.description.toLowerCase().includes(profile.lookingFor.toLowerCase()));
-        const matchesLocation = profile.location?.province && job.location?.province === profile.location?.province;
-        return matchesInterest || matchesLocation;
-      }).map(d => ({ id: d.id, ...d.data() } as Job));
-      
-      setNotifications(matchingJobs);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching notifications:', error);
-      toast.error('Erro ao carregar notificações.');
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, [profile]);
-
-  if (loading) return <LoadingScreen />;
-  if (!profile) return <Navigate to="/" />;
-
-  return (
-    <div className="min-h-screen bg-brand-bg pt-20 pb-24">
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-3xl font-black tracking-tighter text-brand-ink">Notificações</h1>
-            <p className="text-sm font-medium text-brand-ink/60 mt-1">Vagas que combinam com o teu perfil</p>
-          </div>
-          <div className="p-3 bg-primary/10 rounded-2xl">
-            <Bell className="w-6 h-6 text-primary" />
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          {notifications.length === 0 ? (
-            <div className="text-center py-12 bg-white rounded-3xl border border-brand-gray/10 shadow-sm">
-              <Bell className="w-12 h-12 text-brand-ink/20 mx-auto mb-4" />
-              <h3 className="text-lg font-bold text-brand-ink">Sem notificações</h3>
-              <p className="text-sm text-brand-ink/60 mt-2">Avisaremos quando houver novas vagas para ti.</p>
-            </div>
-          ) : (
-            notifications.map(job => (
-              <Link 
-                key={job.id} 
-                to={`/jobs/${job.id}`}
-                className="block bg-white p-6 rounded-3xl border border-brand-gray/10 shadow-sm hover:shadow-md transition-all hover:-translate-y-1"
-              >
-                <div className="flex justify-between items-start mb-4">
-                  <div>
-                    <h3 className="text-lg font-bold text-brand-ink">{job.title}</h3>
-                    <p className="text-sm font-medium text-primary">{job.company}</p>
-                  </div>
-                  <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-bold whitespace-nowrap">
-                    Nova Vaga
-                  </span>
-                </div>
-                
-                <div className="flex flex-wrap gap-2 mb-4">
-                  <span className="flex items-center gap-1 text-xs font-bold text-brand-ink/60 bg-brand-bg px-3 py-1.5 rounded-full">
-                    <MapPin className="w-3 h-3" />
-                    {job.location?.district || 'N/A'}, {job.location?.province || 'N/A'}
-                  </span>
-                  <span className="flex items-center gap-1 text-xs font-bold text-brand-ink/60 bg-brand-bg px-3 py-1.5 rounded-full">
-                    <Briefcase className="w-3 h-3" />
-                    {job.type}
-                  </span>
-                </div>
-                
-                <p className="text-sm text-brand-ink/70 line-clamp-2">{job.description}</p>
-              </Link>
-            ))
-          )}
-        </div>
-      </div>
+      <ConfirmModal
+        show={!!messageToDelete}
+        title="Apagar Mensagem"
+        message={messageToDelete?.forEveryone ? "Tens a certeza que queres apagar esta mensagem para todos?" : "Tens a certeza que queres apagar esta mensagem para ti?"}
+        onConfirm={() => {
+          if (messageToDelete) {
+            deleteMessage(messageToDelete.id, messageToDelete.forEveryone);
+            setMessageToDelete(null);
+          }
+        }}
+        onCancel={() => setMessageToDelete(null)}
+      />
     </div>
   );
 };
@@ -7433,7 +8721,7 @@ export default function App() {
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/education" element={<EducationList />} />
                 <Route path="/admin" element={<AdminDashboard />} />
-                <Route path="/login" element={<LoginPrompt />} />
+                <Route path="/login" element={<LoginPage />} />
                 <Route path="/terms" element={<Terms />} />
                 <Route path="/privacy" element={<Privacy />} />
                 <Route path="/contact" element={<Contact />} />

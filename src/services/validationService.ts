@@ -60,12 +60,25 @@ export const ValidationService = {
 
     switch (type) {
       case 'phone':
-        // Mozambique format: +258 followed by 8 or 9 digits, or just 9 digits starting with 8
-        const phoneRegex = /^(\+258)?(8[2-79])\d{7}$/;
-        if (!phoneRegex.test(value.replace(/\s/g, ''))) {
-          return { valid: false, error: 'Número de telefone inválido (Ex: 841234567)' };
-        }
-        break;
+        // Mozambique format: +258 followed by 9 digits
+        // South Africa format: +27 followed by 9 digits
+        const cleanValue = value.replace(/[\s-]/g, '');
+        
+        // Check if it starts with +258 or +27
+        const mzRegex = /^\+258\d{9}$/;
+        const saRegex = /^\+27\d{9}$/;
+        
+        // Also allow numbers without + if they match the length and start with 258 or 27
+        const mzNoPlusRegex = /^258\d{9}$/;
+        const saNoPlusRegex = /^27\d{9}$/;
+        
+        if (mzRegex.test(cleanValue) || mzNoPlusRegex.test(cleanValue)) break;
+        if (saRegex.test(cleanValue) || saNoPlusRegex.test(cleanValue)) break;
+        
+        return { 
+          valid: false, 
+          error: 'Número de telefone inválido. A KAZI apenas aceita números de Moçambique (+258) ou África do Sul (+27) com 9 dígitos após o código do país.' 
+        };
       case 'email':
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(value)) {
@@ -87,6 +100,26 @@ export const ValidationService = {
   },
 
   /**
+   * Detects if text contains suspicious fraud-related keywords
+   */
+  detectFraud: (text: string): { isSuspicious: boolean; words: string[] } => {
+    const suspiciousWords = [
+      'ganhar dinheiro fácil', 'investimento garantido', 'senha', 'password', 
+      'cartão de crédito', 'cvv', 'transferência urgente', 'prémio', 'lotaria',
+      'clique aqui', 'bit.ly', 't.me', 'whatsapp me', 'pagamento adiantado',
+      'ganha agora', 'trabalho em casa fácil', 'sem experiência necessária'
+    ];
+    
+    const lowerText = text.toLowerCase();
+    const found = suspiciousWords.filter(word => lowerText.includes(word));
+    
+    return {
+      isSuspicious: found.length > 0,
+      words: found
+    };
+  },
+
+  /**
    * Comprehensive content validation
    */
   validateContent: (text: string, minLength: number = 10): { valid: boolean; error?: string } => {
@@ -99,6 +132,12 @@ export const ValidationService = {
     if (ValidationService.isNonsense(text)) {
       return { valid: false, error: 'O conteúdo parece não fazer sentido ou é incoerente.' };
     }
+    
+    const fraud = ValidationService.detectFraud(text);
+    if (fraud.isSuspicious) {
+      return { valid: false, error: 'A sua mensagem contém termos suspeitos que podem ser considerados fraude.' };
+    }
+    
     return { valid: true };
   }
 };
