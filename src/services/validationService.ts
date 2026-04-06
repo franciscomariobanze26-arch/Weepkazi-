@@ -61,23 +61,26 @@ export const ValidationService = {
     switch (type) {
       case 'phone':
         // Mozambique format: +258 followed by 9 digits
-        // South Africa format: +27 followed by 9 digits
+        // South Africa format: +27 followed by 9 or 10 digits
         const cleanValue = value.replace(/[\s-]/g, '');
         
         // Check if it starts with +258 or +27
         const mzRegex = /^\+258\d{9}$/;
-        const saRegex = /^\+27\d{9}$/;
+        const saRegex = /^\+27\d{9,10}$/;
         
         // Also allow numbers without + if they match the length and start with 258 or 27
         const mzNoPlusRegex = /^258\d{9}$/;
-        const saNoPlusRegex = /^27\d{9}$/;
+        const saNoPlusRegex = /^27\d{9,10}$/;
+        
+        // Allow local format for SA (starting with 0, 10 digits)
+        const saLocalRegex = /^0\d{9}$/;
         
         if (mzRegex.test(cleanValue) || mzNoPlusRegex.test(cleanValue)) break;
-        if (saRegex.test(cleanValue) || saNoPlusRegex.test(cleanValue)) break;
+        if (saRegex.test(cleanValue) || saNoPlusRegex.test(cleanValue) || saLocalRegex.test(cleanValue)) break;
         
         return { 
           valid: false, 
-          error: 'Número de telefone inválido. A KAZI apenas aceita números de Moçambique (+258) ou África do Sul (+27) com 9 dígitos após o código do país.' 
+          error: 'Número de telefone inválido. A KAZI aceita números de Moçambique (+258) ou África do Sul (+27 / local 0...).' 
         };
       case 'email':
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

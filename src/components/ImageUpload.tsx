@@ -3,7 +3,7 @@ import React, { useState, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { Plus, X, Image as ImageIcon, Loader2 } from 'lucide-react';
 import { compressImage } from '../lib/imageUtils';
-import { cn } from '../App';
+import { cn } from '../lib/utils';
 
 interface ImageUploadProps {
   onImageUploaded: (base64: string) => void;

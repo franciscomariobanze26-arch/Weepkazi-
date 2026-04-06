@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Pause } from 'lucide-react';
-import { cn } from '../App';
+import { cn } from '../lib/utils';
 
 interface AudioPlayerProps {
   src: string;

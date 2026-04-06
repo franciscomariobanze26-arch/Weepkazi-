@@ -47,6 +47,12 @@ service cloud.firestore {
               request.resource.data[field].size() <= max);
     }
 
+    function isRecent(field) {
+      return request.resource.data[field] is timestamp &&
+             request.resource.data[field] > request.time - duration.value(5, 'm') &&
+             request.resource.data[field] <= request.time;
+    }
+
     // ===============================================================
     // Domain Validators
     // ===============================================================
@@ -64,7 +70,7 @@ service cloud.firestore {
              isValidString('title', 1, 100) &&
              data.category is string &&
              data.authorId is string && data.authorId == request.auth.uid &&
-             data.createdAt is timestamp &&
+             isRecent('createdAt') &&
              isValidOptionalString('description', 0, 2000);
     }
 
@@ -76,14 +82,14 @@ service cloud.firestore {
              data.location is map &&
              data.type in ['full-time', 'part-time', 'internship', 'freelance'] &&
              data.authorId is string && data.authorId == request.auth.uid &&
-             data.createdAt is timestamp;
+             isRecent('createdAt');
     }
 
     function isValidMessage(data) {
       return hasRequiredFields(['senderId', 'content', 'createdAt']) &&
              data.senderId is string && data.senderId == request.auth.uid &&
              isValidString('content', 1, 5000) &&
-             data.createdAt is timestamp;
+             isRecent('createdAt');
     }
 
     function isValidChat(data) {
@@ -93,7 +99,7 @@ service cloud.firestore {
              data.lastMessageAt is timestamp &&
              data.status in ['pending', 'active', 'rejected'] &&
              data.initiatorId is string &&
-             data.createdAt is timestamp;
+             isRecent('createdAt');
     }
 
     function isValidChatUpdate(data) {
@@ -113,7 +119,7 @@ service cloud.firestore {
              data.clientId is string && data.clientId == request.auth.uid &&
              data.providerId is string &&
              data.status is string &&
-             data.createdAt is timestamp;
+             isRecent('createdAt');
     }
 
     function isValidReview(data) {
@@ -122,7 +128,7 @@ service cloud.firestore {
              data.authorId is string && data.authorId == request.auth.uid &&
              data.rating is number && data.rating >= 1 && data.rating <= 5 &&
              isValidString('comment', 1, 1000) &&
-             data.createdAt is timestamp;
+             isRecent('createdAt');
     }
 
     function isValidCommunity(data) {
@@ -130,7 +136,7 @@ service cloud.firestore {
              isValidString('name', 1, 100) &&
              isValidString('description', 1, 2000) &&
              data.creatorId is string && data.creatorId == request.auth.uid &&
-             data.createdAt is timestamp &&
+             isRecent('createdAt') &&
              (!('photoURL' in data) || data.photoURL == null || (data.photoURL is string && data.photoURL.size() < 2000)) &&
              (!('memberCount' in data) || data.memberCount is number) &&
              (!('requiresApproval' in data) || data.requiresApproval is bool) &&
@@ -142,7 +148,7 @@ service cloud.firestore {
              data.uid is string &&
              data.role in ['admin', 'member'] &&
              data.status in ['pending', 'approved'] &&
-             data.joinedAt is timestamp &&
+             isRecent('joinedAt') &&
              (!('displayName' in data) || data.displayName is string) &&
              (!('photoURL' in data) || data.photoURL == null || data.photoURL is string);
     }
@@ -151,7 +157,7 @@ service cloud.firestore {
       return hasRequiredFields(['senderId', 'content', 'createdAt']) &&
              data.senderId is string && data.senderId == request.auth.uid &&
              isValidString('content', 1, 5000) &&
-             data.createdAt is timestamp &&
+             isRecent('createdAt') &&
              (!('senderName' in data) || (data.senderName is string && data.senderName.size() < 100)) &&
              (!('senderPhoto' in data) || data.senderPhoto == null || (data.senderPhoto is string && data.senderPhoto.size() < 2000)) &&
              (!('imageURL' in data) || data.imageURL == null || (data.imageURL is string && data.imageURL.size() < 2000)) &&
@@ -163,7 +169,7 @@ service cloud.firestore {
       return hasRequiredFields(['content', 'authorId', 'createdAt']) &&
              isValidString('content', 1, 5000) &&
              data.authorId is string && data.authorId == request.auth.uid &&
-             data.createdAt is timestamp;
+             isRecent('createdAt');
     }
 
     function isValidReport(data) {
@@ -172,14 +178,24 @@ service cloud.firestore {
              data.reportedType in ['user', 'service', 'message', 'announcement'] &&
              data.reporterId is string && data.reporterId == request.auth.uid &&
              data.status in ['pending', 'in_review', 'resolved', 'rejected'] &&
-             data.createdAt is timestamp;
+             isRecent('createdAt');
     }
 
     function isValidFollow(data) {
       return hasRequiredFields(['followerId', 'followingId', 'createdAt']) &&
              data.followerId is string && data.followerId == request.auth.uid &&
              data.followingId is string &&
-             data.createdAt is timestamp;
+             isRecent('createdAt');
+    }
+
+    function isValidNotification(data) {
+      return hasRequiredFields(['userId', 'title', 'message', 'type', 'read', 'createdAt']) &&
+             data.userId is string &&
+             isValidString('title', 1, 200) &&
+             isValidString('message', 1, 1000) &&
+             data.type in ['message', 'interest', 'review', 'promotion', 'system'] &&
+             data.read is bool &&
+             isRecent('createdAt');
     }
 
     // ===============================================================
@@ -187,8 +203,9 @@ service cloud.firestore {
     // ===============================================================
     match /users/{userId} {
       allow read: if true;
-      allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if (isOwner(userId) || isAdmin()) || 
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == 'client';
+      allow update: if (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.role == resource.data.role) || 
+                    isAdmin() || 
                     (isAuthenticated() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['followerCount', 'followingCount', 'online', 'lastSeen', 'unreadCount']));
       allow delete: if isAdmin();
     }
@@ -200,20 +217,20 @@ service cloud.firestore {
     match /services/{serviceId} {
       allow read: if true;
       allow create: if isAuthenticated() && isValidService(request.resource.data);
-      allow update: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isAdmin());
+      allow update: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isAdmin()) && isValidService(request.resource.data);
       allow delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isAdmin());
     }
 
     match /jobs/{jobId} {
       allow read: if true;
       allow create: if isAuthenticated() && isValidJob(request.resource.data);
-      allow update: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isAdmin());
+      allow update: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isAdmin()) && isValidJob(request.resource.data);
       allow delete: if isAuthenticated() && (resource.data.authorId == request.auth.uid || isAdmin());
     }
 
     match /orders/{orderId} {
       allow read: if isAuthenticated() && (resource.data.clientId == request.auth.uid || resource.data.providerId == request.auth.uid || isAdmin());
-      allow create: if isAuthenticated() && request.resource.data.clientId == request.auth.uid;
+      allow create: if isAuthenticated() && isValidOrder(request.resource.data);
       allow update: if isAuthenticated() && (resource.data.clientId == request.auth.uid || resource.data.providerId == request.auth.uid || isAdmin());
       allow delete: if isAdmin();
     }
@@ -294,6 +311,14 @@ service cloud.firestore {
       allow read: if true;
       allow create, update: if isAuthenticated() && (request.resource.data.followerId == request.auth.uid || isAdmin());
       allow delete: if isAuthenticated() && (resource.data.followerId == request.auth.uid || isAdmin());
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow create: if isAuthenticated() && isValidNotification(request.resource.data);
+      allow update: if isAuthenticated() && resource.data.userId == request.auth.uid && 
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']);
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
     }
   }
 }
